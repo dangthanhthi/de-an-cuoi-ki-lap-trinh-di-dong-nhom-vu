@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; 
 import '../models/app_models.dart';
 import '../controllers/app_state.dart';
-import 'create_edit_note_screen.dart';
+import 'create_edit_note_screen.dart'; // Đã thêm import để sửa lỗi 1
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
@@ -12,21 +13,41 @@ class NoteDetailScreen extends StatefulWidget {
 }
 
 class _NoteDetailScreenState extends State<NoteDetailScreen> {
-  void _deleteNote() {
-    AppState.notes.removeWhere((n) => n.id == widget.note.id);
-    AppState.logActivity('Xóa ghi chú', 'Đã xóa ghi chú: "${widget.note.title}"');
-    Navigator.pop(context);
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã xóa ghi chú')));
+  
+  void _deleteNote() async {
+    final navigator = Navigator.of(context);
+    final scaffoldMsg = ScaffoldMessenger.of(context);
+
+    try {
+      await FirebaseFirestore.instance.collection('notes').doc(widget.note.id).delete();
+      AppState.logActivity('Xóa ghi chú', 'Đã xóa ghi chú: "${widget.note.title}"');
+      
+      navigator.pop(); 
+      scaffoldMsg.showSnackBar(const SnackBar(content: Text('Đã xóa ghi chú thành công')));
+    } catch (e) {
+      scaffoldMsg.showSnackBar(SnackBar(content: Text('Lỗi khi xóa: $e')));
+    }
   }
 
-  void _shareNote() {
+void _shareNote() async {
+    // 1. Tải danh bạ từ Firebase trước khi mở bảng chia sẻ
+    final contactsSnapshot = await FirebaseFirestore.instance
+        .collection('contacts')
+        .where('userId', isEqualTo: FirebaseService.currentUid)
+        .get();
+        
+    List<Map<String, dynamic>> myFriends = contactsSnapshot.docs.map((doc) => doc.data()).toList();
+
+    if (!mounted) return;
+
+    // 2. Mở bảng chia sẻ
     showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
         builder: (context) {
           String email = '';
-          List<String> selectedContacts = [];
+          List<String> selectedContacts = []; // Chứa email của những người được tick
 
           return StatefulBuilder(
               builder: (BuildContext context, StateSetter setModalState) {
@@ -42,67 +63,99 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       children: [
                         const Text('Chia sẻ ghi chú', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 16),
+                        
+                        // Ô nhập tay (Dành cho người chưa kết bạn)
                         TextField(
-                          onChanged: (val) => email = val,
+                          onChanged: (val) => email = val.trim(),
                           decoration: InputDecoration(
-                            hintText: 'Nhập email người nhận',
+                            hintText: 'Nhập tay email người nhận...',
                             prefixIcon: const Icon(Icons.email_outlined),
                             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           ),
                         ),
                         const SizedBox(height: 16),
-                        const Text('Hoặc chọn từ danh bạ:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        
+                        // Danh sách bạn bè (Gợi ý)
+                        const Text('Hoặc chọn từ danh bạ:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.indigo)),
                         const SizedBox(height: 8),
-                        Container(
-                          constraints: const BoxConstraints(maxHeight: 200),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.grey.shade200),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: AppState.contacts.length,
-                            itemBuilder: (context, index) {
-                              final contact = AppState.contacts[index];
-                              final isSelected = selectedContacts.contains(contact.email);
-                              return CheckboxListTile(
-                                value: isSelected,
-                                title: Text(contact.name),
-                                subtitle: Text(contact.email, style: const TextStyle(fontSize: 12)),
-                                onChanged: (bool? val) {
-                                  setModalState(() {
-                                    if (val == true) {
-                                      selectedContacts.add(contact.email);
-                                    } else {
-                                      selectedContacts.remove(contact.email);
-                                    }
-                                  });
-                                },
-                              );
-                            },
-                          ),
-                        ),
+                        myFriends.isEmpty 
+                            ? const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text('Bạn chưa có ai trong danh bạ. Hãy vào mục Danh bạ để kết bạn nhé!', style: TextStyle(color: Colors.grey, fontStyle: FontStyle.italic)),
+                              )
+                            : Container(
+                                constraints: const BoxConstraints(maxHeight: 200),
+                                decoration: BoxDecoration(border: Border.all(color: Colors.grey.shade200), borderRadius: BorderRadius.circular(12)),
+                                child: ListView.builder(
+                                  shrinkWrap: true,
+                                  itemCount: myFriends.length,
+                                  itemBuilder: (context, index) {
+                                    final friend = myFriends[index];
+                                    final friendEmail = friend['email'];
+                                    final isSelected = selectedContacts.contains(friendEmail);
+                                    
+                                    // Bỏ mờ những người ĐÃ ĐƯỢC CHIA SẺ RỒI
+                                    final alreadyShared = widget.note.sharedWith.contains(friendEmail);
+
+                                    return CheckboxListTile(
+                                      value: alreadyShared ? true : isSelected, // Đã share rồi thì tự động tick cứng
+                                      enabled: !alreadyShared, // Đã share rồi thì không cho bấm bỏ tick ở đây
+                                      title: Text(friend['name'] ?? 'Bạn bè', style: TextStyle(color: alreadyShared ? Colors.grey : Colors.black)),
+                                      subtitle: Text(friendEmail, style: TextStyle(fontSize: 12, color: alreadyShared ? Colors.grey : Colors.black54)),
+                                      secondary: CircleAvatar(backgroundImage: NetworkImage(friend['avatar'] ?? 'https://ui-avatars.com/api/?background=random')),
+                                      onChanged: (bool? val) {
+                                        setModalState(() {
+                                          if (val == true) selectedContacts.add(friendEmail);
+                                          else selectedContacts.remove(friendEmail);
+                                        });
+                                      },
+                                    );
+                                  },
+                                ),
+                              ),
                         const SizedBox(height: 16),
+
+                        // Nút Gửi lời mời
                         SizedBox(
                           width: double.infinity,
                           child: FilledButton(
-                            onPressed: () {
+                            onPressed: () async {
                               List<String> finalEmails = [...selectedContacts];
-                              if (email.isNotEmpty && !finalEmails.contains(email)) {
-                                finalEmails.add(email);
+                              String typedEmail = email.toLowerCase(); 
+
+                              // 1. Kiểm tra ô nhập tay
+                              if (typedEmail.isNotEmpty && !finalEmails.contains(typedEmail)) {
+                                final checkUser = await FirebaseFirestore.instance.collection('users').where('email', isEqualTo: typedEmail).get();
+                                if (checkUser.docs.isEmpty) {
+                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Lỗi: Tài khoản "$typedEmail" không tồn tại!'), backgroundColor: Colors.red));
+                                  return; 
+                                }
+                                finalEmails.add(typedEmail);
                               }
 
-                              if(finalEmails.isNotEmpty) {
+                              // Lọc bỏ những người đã được chia sẻ từ trước rồi (để không gọi Firebase thừa)
+                              finalEmails.removeWhere((e) => widget.note.sharedWith.contains(e));
+
+                              // 2. Tiến hành chia sẻ
+                              if (finalEmails.isNotEmpty) {
+                                final navigator = Navigator.of(context);
+                                final scaffoldMsg = ScaffoldMessenger.of(context);
+
+                                for (String targetEmail in finalEmails) {
+                                  await FirebaseService.shareNote(widget.note.id, targetEmail);
+                                }
+                                
                                 setState(() {
-                                  widget.note.sharedWith.addAll(finalEmails);
-                                  widget.note.sharedWith = widget.note.sharedWith.toSet().toList(); // Xóa trùng lặp
+                                  widget.note.sharedWith = [...widget.note.sharedWith, ...finalEmails].toSet().toList();
                                 });
-                                AppState.logActivity('Chia sẻ ghi chú', 'Đã chia sẻ "${widget.note.title}" với ${finalEmails.join(", ")}');
-                                Navigator.pop(context);
-                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Đã chia sẻ với ${finalEmails.join(", ")}')));
+
+                                navigator.pop(); 
+                                scaffoldMsg.showSnackBar(SnackBar(content: Text('Đã chia sẻ thành công với ${finalEmails.length} người')));
+                              } else {
+                                Navigator.of(context).pop();
                               }
                             },
-                            child: const Text('Gửi lời mời'),
+                            child: const Text('Chia sẻ ngay'),
                           ),
                         ),
                         const SizedBox(height: 24),
@@ -156,7 +209,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    bool isSharedWithMe = widget.note.sharedWith.contains(AppState.currentUserEmail);
+    String myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool isSharedWithMe = widget.note.sharedWith.any((e) => e.toLowerCase().trim() == myEmail);
     Color activeColor = isSharedWithMe ? Colors.red : widget.note.coverColor;
 
     return Scaffold(
@@ -169,11 +223,12 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             pinned: true,
             backgroundColor: activeColor,
             flexibleSpace: FlexibleSpaceBar(
-              background: Center(child: Icon(widget.note.isTodo ? Icons.check_box : Icons.edit_document, size: 80, color: Colors.white.withOpacity(0.5))),
+              background: Center(child: Icon(widget.note.isTodo ? Icons.check_box : Icons.edit_document, size: 80, color: Colors.white.withValues(alpha: 0.5))),
             ),
             actions: [
               IconButton(icon: const Icon(Icons.auto_awesome, color: Colors.white), tooltip: 'Tóm tắt AI', onPressed: _summarizeAI),
               IconButton(icon: const Icon(Icons.share, color: Colors.white), tooltip: 'Chia sẻ', onPressed: _shareNote),
+              
               IconButton(icon: const Icon(Icons.edit, color: Colors.white), tooltip: 'Sửa', onPressed: () async {
                 await Navigator.push(context, MaterialPageRoute(builder: (context) => CreateEditNoteScreen(note: widget.note)));
                 setState(() {});
@@ -197,7 +252,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     children: [
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(color: activeColor.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                        decoration: BoxDecoration(color: activeColor.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12)),
                         child: Text(widget.note.label, style: TextStyle(color: activeColor, fontWeight: FontWeight.bold)),
                       ),
                       Text(widget.note.date, style: const TextStyle(color: Colors.grey)),
@@ -220,21 +275,32 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                   if (widget.note.sharedWith.isNotEmpty && !isSharedWithMe) ...[
                     const SizedBox(height: 12),
                     Row(
+                      crossAxisAlignment: CrossAxisAlignment.start, // Sửa lỗi 2: Cho phép rớt dòng từ trên xuống
                       children: [
-                        const Icon(Icons.group, size: 16, color: Colors.grey),
+                        const Padding(
+                          padding: EdgeInsets.only(top: 2.0),
+                          child: Icon(Icons.group, size: 16, color: Colors.grey),
+                        ),
                         const SizedBox(width: 8),
-                        Text('Đã chia sẻ với: ${widget.note.sharedWith.join(", ")}', style: const TextStyle(color: Colors.grey)),
+                        // Sửa lỗi 2: Bọc dòng chữ email dài vào Expanded để nó tự động xuống dòng
+                        Expanded(
+                          child: Text(
+                            'Đã chia sẻ với: ${widget.note.sharedWith.join(", ")}', 
+                            style: const TextStyle(color: Colors.grey)
+                          ),
+                        ),
                       ],
                     )
                   ],
                   const Divider(height: 40),
+                  
                   if (widget.note.isTodo)
                     ...widget.note.todos.map((todo) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(todo.isDone ? Icons.check_circle : Icons.radio_button_unchecked, color: todo.isDone ? activeColor : Colors.grey),
                       title: Text(todo.task, style: TextStyle(fontSize: 16, decoration: todo.isDone ? TextDecoration.lineThrough : null, color: todo.isDone ? Colors.grey : Colors.black)),
                       onTap: () => setState(() => todo.isDone = !todo.isDone),
-                    )).toList()
+                    ))
                   else
                     Text(widget.note.content, style: const TextStyle(fontSize: 16, height: 1.6)),
 
