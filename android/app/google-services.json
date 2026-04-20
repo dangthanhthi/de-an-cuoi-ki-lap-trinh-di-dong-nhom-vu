@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "392662072726",
+    "project_id": "snote-e8384",
+    "storage_bucket": "snote-e8384.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:392662072726:android:061658baf9d447e44531b7",
+        "android_client_info": {
+          "package_name": "com.example.deancuoikisnote"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBOxprTuQ6Q28-ejIhGGVVeFmNUxDIeMtM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

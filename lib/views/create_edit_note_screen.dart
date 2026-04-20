@@ -5,7 +5,9 @@ import '../controllers/app_state.dart';
 
 class CreateEditNoteScreen extends StatefulWidget {
   final Note? note;
-  const CreateEditNoteScreen({super.key, this.note});
+  // Thêm biến này để biết ID trên Firebase nếu đang sửa ghi chú
+  final String? docId; 
+  const CreateEditNoteScreen({super.key, this.note, this.docId});
 
   @override
   State<CreateEditNoteScreen> createState() => _CreateEditNoteScreenState();
@@ -21,11 +23,28 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   String _lastAITitle = "";
   int _aiClickCount = 0;
 
+  // --- NÂNG CẤP: DANH SÁCH MÀU SẮC ---
+  final List<Color> _noteColors = [
+    Colors.blue.shade100,
+    Colors.red.shade100,
+    Colors.green.shade100,
+    Colors.orange.shade100,
+    Colors.purple.shade100,
+    Colors.yellow.shade100,
+    Colors.teal.shade100,
+    Colors.pink.shade100,
+  ];
+  late Color _selectedColor; // Biến lưu màu đang được chọn
+
   @override
   void initState() {
     super.initState();
     _titleController = TextEditingController(text: widget.note?.title ?? '');
     _contentController = TextEditingController(text: widget.note?.content ?? '');
+    
+    // NÂNG CẤP: Lấy màu cũ của ghi chú (nếu có), không thì lấy màu đầu tiên
+    _selectedColor = widget.note?.coverColor ?? _noteColors.first;
+
     if (widget.note != null) {
       _selectedLabel = widget.note!.label;
       _isTodo = widget.note!.isTodo;
@@ -33,40 +52,60 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     }
   }
 
-  void _saveNote() {
+  // --- HÀM LƯU / CẬP NHẬT ĐÃ FIX ẢO GIÁC "KHÔNG LƯU" VÀ CÓ MÀU ---
+  void _saveNote() async {
     if (_titleController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vui lòng nhập tiêu đề')));
       return;
     }
 
-    if (widget.note == null) {
-      final newNote = Note(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: _titleController.text,
-        content: _contentController.text,
-        label: _selectedLabel,
-        date: 'Hôm nay',
-        coverColor: Colors.primaries[Random().nextInt(Colors.primaries.length)],
-        isTodo: _isTodo,
-        todos: _todos,
-      );
-      AppState.notes.insert(0, newNote);
-      AppState.logActivity('Tạo ghi chú', 'Đã tạo ghi chú mới: "${newNote.title}"');
-    } else {
-      widget.note!.title = _titleController.text;
-      widget.note!.content = _contentController.text;
-      widget.note!.label = _selectedLabel;
-      widget.note!.isTodo = _isTodo;
-      widget.note!.todos = _todos;
-      AppState.logActivity('Sửa ghi chú', 'Đã cập nhật ghi chú: "${widget.note!.title}"');
+    final noteData = Note(
+      id: widget.note?.id ?? "", 
+      title: _titleController.text,
+      content: _contentController.text,
+      label: _selectedLabel,
+      date: widget.note?.date ?? DateTime.now().toString().substring(0, 10),
+      isTodo: _isTodo,
+      todos: _todos,
+      sharedWith: widget.note?.sharedWith ?? [], 
+      coverColor: _selectedColor, // LẤY MÀU ĐÃ CHỌN LƯU VÀO ĐÂY
+    );
+
+    final navigator = Navigator.of(context);
+    final scaffoldMsg = ScaffoldMessenger.of(context);
+
+    try {
+      if (widget.note == null) {
+        // TẠO MỚI
+        await FirebaseService.addNote(noteData);
+        scaffoldMsg.showSnackBar(const SnackBar(content: Text('Đã tạo ghi chú mới!')));
+      } else {
+        // CẬP NHẬT
+        await FirebaseService.updateNote(widget.note!.id, noteData);
+        
+        setState(() {
+          widget.note!.title = noteData.title;
+          widget.note!.content = noteData.content;
+          widget.note!.label = noteData.label;
+          widget.note!.isTodo = noteData.isTodo;
+          widget.note!.todos = noteData.todos;
+          widget.note!.coverColor = _selectedColor; // CẬP NHẬT MÀU VÀO BỘ NHỚ RAM
+        });
+
+        scaffoldMsg.showSnackBar(const SnackBar(content: Text('Đã cập nhật thay đổi!')));
+      }
+
+      if (mounted) navigator.pop(); 
+    } catch (e) {
+      scaffoldMsg.showSnackBar(SnackBar(content: Text('Lỗi khi lưu: $e')));
     }
-    Navigator.pop(context);
   }
 
+  // --- THUẬT TOÁN AI ĐÃ ĐƯỢC NÂNG CẤP THÔNG MINH HƠN ---
   void _askAI() async {
     String title = _titleController.text.trim().toLowerCase();
     if (title.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Vui lòng nhập tiêu đề để AI có thể gợi ý!')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bạn phải nhập tiêu đề để AI có manh mối phân tích nhé!')));
       return;
     }
 
@@ -76,81 +115,75 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     }
 
     setState(() => _isAILoading = true);
-    await Future.delayed(const Duration(milliseconds: 1200));
+    // Giả lập thời gian AI "suy nghĩ" ngẫu nhiên từ 1.2s đến 2.2s cho giống thật
+    await Future.delayed(Duration(milliseconds: 1200 + Random().nextInt(1000)));
 
-    _aiClickCount++;
-    int variationIndex = (_aiClickCount - 1) % 3;
+    List<String> generatedTodos = [];
+    String generatedContent = "";
 
-    List<List<String>> todoVariations = [];
-    List<String> contentVariations = [];
-    if (title.contains('họp') || title.contains('meeting')) {
-      todoVariations = [
-        ['Chuẩn bị tài liệu báo cáo', 'Gửi link Google Meet', 'Ghi chú biên bản'],
-        ['Làm slide thuyết trình', 'Mua nước/cafe cho phòng họp', 'Kiểm tra máy chiếu'],
-        ['Gửi email tóm tắt (Recap)', 'Cập nhật task lên hệ thống', 'Lên lịch họp lần sau']
-      ];
-      contentVariations = [
-        'Nội dung cuộc họp:\n1. Cập nhật tiến độ dự án.\n2. Giải quyết các vấn đề tồn đọng.',
-        'Gợi ý thêm:\n- Dành 10 phút cuối để Q&A.\n- Yêu cầu mọi người tắt điện thoại.',
-        'Mục tiêu đầu ra:\n- Chốt được deadline.\n- Phân công rõ người chịu trách nhiệm (PIC).'
-      ];
-    } else if (title.contains('mua') || title.contains('siêu thị') || title.contains('chợ')) {
-      todoVariations = [
-        ['Kiểm tra tủ lạnh trước khi đi', 'Mang theo túi vải', 'Mua đồ ăn tươi sống'],
-        ['Mua gia vị (Mắm, muối, đường)', 'Mua giấy vệ sinh', 'Mua sữa tắm/dầu gội'],
-        ['Mua trái cây tráng miệng', 'Mua đồ ăn vặt', 'Thanh toán bằng thẻ tín dụng']
-      ];
-      contentVariations = [
-        'Danh sách cần mua:\n- Thực phẩm: ...\n- Đồ gia dụng: ...',
-        'Lưu ý:\n- Mua đồ hộp dự trữ.\n- Kiểm tra hạn sử dụng kỹ càng.',
-        'Mẹo đi siêu thị:\n- Lên danh sách trước để không mua lố tay.\n- Đi vào buổi sáng để có đồ tươi.'
-      ];
-    } else {
-      todoVariations = [
-        ['Lên kế hoạch chi tiết', 'Phân bổ thời gian thực hiện', 'Chuẩn bị nguồn lực'],
-        ['Tìm kiếm tài liệu tham khảo', 'Xin ý kiến chuyên gia', 'Bắt đầu triển khai bước 1'],
-        ['Đánh giá tiến độ', 'Tối ưu hóa quy trình', 'Báo cáo kết quả cuối cùng']
-      ];
-      contentVariations = [
-        'Dàn ý cơ bản (Lần 1):\n1. Giới thiệu/Mục tiêu.\n2. Các bước triển khai.\n3. Kết luận.',
-        'Phân tích chuyên sâu (Lần 2):\n- Điểm mạnh (Strengths).\n- Điểm yếu (Weaknesses).\n- Cơ hội (Opportunities).',
-        'Lưu ý bổ sung (Lần 3):\n- Luôn có phương án dự phòng (Plan B).\n- Theo dõi sát sao tiến độ.'
-      ];
+    if (title.contains('họp') || title.contains('meeting') || title.contains('thảo luận') || title.contains('báo cáo')) {
+      generatedTodos = ['Chuẩn bị tài liệu/Slide thuyết trình', 'Gửi lịch mời (Calendar) cho người tham gia', 'Đặt phòng họp/Tạo link Google Meet', 'Chuẩn bị sổ bút để ghi biên bản (Minutes)', 'Tổng hợp số liệu tuần trước', 'Gửi email tóm tắt (Recap) sau khi họp xong'];
+      generatedContent = '🎯 Mục tiêu cuộc họp:\n- Đồng bộ tiến độ công việc giữa các thành viên.\n- Giải quyết các vướng mắc (Blockers).\n\n📌 Agenda dự kiến:\n1. Review công việc đã qua (10p)\n2. Thảo luận vấn đề cốt lõi (30p)\n3. Chốt Next steps & Phân công người chịu trách nhiệm (10p)';
+    } 
+    else if (title.contains('mua') || title.contains('chợ') || title.contains('siêu thị') || title.contains('shopping')) {
+      generatedTodos = ['Lên trước danh sách đồ cần mua để tránh quên', 'Mang theo túi vải bảo vệ môi trường', 'Kiểm tra mã giảm giá (Voucher/Coupon)', 'Rút tiền mặt phòng hờ', 'Mua đồ tươi sống trước, đồ khô sau'];
+      generatedContent = '🛒 Ghi chú mua sắm:\n- Nên ăn no trước khi đi siêu thị để tránh mua sắm bốc đồng.\n- Kiểm tra kỹ hạn sử dụng (Date) của sản phẩm.\n- Cân nhắc mua đồ dự trữ đóng hộp nếu có khuyến mãi tốt.';
+    } 
+    else if (title.contains('học') || title.contains('thi') || title.contains('bài tập') || title.contains('đồ án') || title.contains('luận văn')) {
+      generatedTodos = ['Đọc lại toàn bộ slide bài giảng', 'Tóm tắt các ý chính ra giấy (Sơ đồ tư duy)', 'Giải thử đề thi năm ngoái', 'Hỏi lại thầy/bạn bè những chỗ chưa hiểu', 'Tắt Wifi điện thoại trong 2 tiếng', 'Lên thư viện mượn thêm sách tham khảo'];
+      generatedContent = '📚 Kế hoạch học tập hiệu quả:\n- Áp dụng phương pháp Pomodoro (25p học tập trung, 5p nghỉ ngơi).\n- Dọn dẹp góc học tập cho gọn gàng để tăng cảm hứng.\n- Đặt mục tiêu: Hoàn thành ít nhất 80% khối lượng bài hôm nay.';
+    } 
+    else if (title.contains('đi chơi') || title.contains('du lịch') || title.contains('phượt') || title.contains('bay') || title.contains('chuyến đi')) {
+      generatedTodos = ['Lên lịch trình chi tiết cho từng ngày', 'Đặt vé máy bay/xe khách sớm để có giá tốt', 'Book phòng khách sạn/Homestay (Agoda/Booking)', 'Sắp xếp hành lý (Quần áo, sạc dự phòng)', 'Chuẩn bị túi thuốc y tế cơ bản', 'Mang theo giấy tờ tùy thân (CCCD/Passport)'];
+      generatedContent = '✈️ Cẩm nang chuyến đi:\n- Lưu ý check-in và check-out khách sạn đúng giờ.\n- Tìm hiểu trước các quán ăn đặc sản địa phương (Local food).\n- Mang theo ô/dù và kem chống nắng để đối phó với thời tiết thất thường.';
+    } 
+    else if (title.contains('tập') || title.contains('gym') || title.contains('chạy') || title.contains('giảm cân') || title.contains('thể thao')) {
+      generatedTodos = ['Khởi động thật kỹ các khớp (10-15p)', 'Chuẩn bị bình nước và khăn lau mồ hôi', 'Tập theo giáo án chuẩn bị sẵn', 'Giãn cơ sau khi tập (Stretching) để chống đau mỏi', 'Cân đo lại chỉ số cơ thể đầu ngày'];
+      generatedContent = '💪 Kế hoạch rèn luyện cơ thể:\n- Tuyệt đối không bỏ bữa, ưu tiên ăn đủ đạm (Protein) để phục hồi.\n- Cố gắng ngủ đủ 7-8 tiếng mỗi đêm.\n- Lắng nghe cơ thể, nếu thấy đau nhói thì phải dừng tập ngay (Tránh chấn thương).';
+    } 
+    else if (title.contains('code') || title.contains('bug') || title.contains('fix') || title.contains('lập trình') || title.contains('app') || title.contains('flutter')) {
+      generatedTodos = ['Tái hiện lại lỗi (Reproduce bug) để xem nó nằm ở đâu', 'Đọc kỹ Terminal/Log lỗi', 'Tìm kiếm giải pháp trên StackOverflow hoặc Google', 'Commit code hiện tại trước khi sửa', 'Xóa cache và Restart lại App', 'Nhờ đồng đội review code'];
+      generatedContent = '💻 Kế hoạch Lập trình:\n- Chia nhỏ chức năng phức tạp thành các task bé hơn.\n- Đừng quên Commit và Push code lên Github thường xuyên.\n- Viết comment giải thích logic ở những file quan trọng để sau này dễ đọc lại.';
+    } 
+    else {
+      generatedTodos = ['Phân tích yêu cầu chi tiết', 'Chia nhỏ công việc (Breakdown task)', 'Bắt tay vào làm từ việc dễ nhất', 'Kiểm tra lại toàn bộ và hoàn thiện', 'Nhờ người khác đánh giá giúp'];
+      generatedContent = '✨ Gợi ý để hoàn thành mục tiêu "${_titleController.text}":\n- Xác định rõ kết quả cuối cùng bạn muốn đạt được là gì.\n- Đặt một Deadline cụ thể để không bị trì hoãn.\n- Hành động ngay hôm nay, bắt đầu từ những bước nhỏ nhất.';
     }
 
-    List<String> currentTodos = todoVariations[variationIndex];
-    String currentContent = contentVariations[variationIndex];
+    // --- XÁO TRỘN ĐỂ TẠO SỰ NGUẪU NHIÊN GIỐNG AI THẬT ---
+    generatedTodos.shuffle();
+    int taskCount = min(3, generatedTodos.length); // Lấy ngẫu nhiên 3 công việc
+    List<String> finalTodos = generatedTodos.sublist(0, taskCount);
 
     setState(() {
       _isAILoading = false;
+      _aiClickCount++;
 
       if (_isTodo) {
         int addedCount = 0;
-        for (var task in currentTodos) {
-          bool isExist = _todos.any((t) => t.task.toLowerCase() == task.toLowerCase());
-          if (!isExist) {
+        for (var task in finalTodos) {
+          if (!_todos.any((t) => t.task.toLowerCase() == task.toLowerCase())) {
             _todos.add(TodoItem(task: task));
             addedCount++;
           }
         }
         if (addedCount == 0 && mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Bạn đã có đủ các gợi ý này rồi!')));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('AI thấy các ý tưởng này đã có sẵn trong danh sách của bạn rồi!')));
         }
       } else {
-        String aiText = '✨ [AI Gợi ý lần $_aiClickCount]:\n$currentContent';
-        if (!_contentController.text.contains(currentContent)) {
-          if (_contentController.text.isNotEmpty) {
-            _contentController.text += '\n\n';
-          }
+        String aiText = '✨ [AI Phân tích lần $_aiClickCount]:\n$generatedContent';
+        // Kiểm tra tránh lặp nội dung
+        if (!_contentController.text.contains(generatedContent.substring(0, 15))) {
+          if (_contentController.text.isNotEmpty) _contentController.text += '\n\n';
           _contentController.text += aiText;
         } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nội dung này đã được gợi ý rồi!')));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Nội dung này đã được AI viết cho bạn rồi, hãy nhập tiêu đề khác nhé!')));
         }
       }
     });
 
-    if(mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('✨ AI đã tạo xong (Gợi ý mẫu số ${_aiClickCount})!')));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('✨ AI đã phân tích xong tiêu đề của bạn!')));
     }
   }
 
@@ -177,6 +210,34 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // --- NÂNG CẤP: GIAO DIỆN CHỌN MÀU NẰM Ở ĐÂY ---
+            const Text('Màu sắc ghi chú:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 40,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _noteColors.length,
+                itemBuilder: (ctx, i) => GestureDetector(
+                  onTap: () => setState(() => _selectedColor = _noteColors[i]),
+                  child: Container(
+                    width: 36, height: 36,
+                    margin: const EdgeInsets.only(right: 12),
+                    decoration: BoxDecoration(
+                      color: _noteColors[i],
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: _selectedColor == _noteColors[i] ? Colors.black54 : Colors.transparent, 
+                        width: 2
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            // ---------------------------------------------
+
             TextField(
               controller: _titleController,
               style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
@@ -200,7 +261,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 Switch(
                   value: _isTodo,
                   onChanged: (val) => setState(() => _isTodo = val),
-                  activeColor: Theme.of(context).colorScheme.primary,
+                  activeThumbColor: Theme.of(context).colorScheme.primary,
                 ),
               ],
             ),

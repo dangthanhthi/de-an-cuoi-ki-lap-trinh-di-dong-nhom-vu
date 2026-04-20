@@ -1,93 +1,182 @@
 import 'package:flutter/material.dart';
-import '../models/app_models.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../controllers/app_state.dart';
 
 class ContactsScreen extends StatefulWidget {
   const ContactsScreen({super.key});
+
   @override
   State<ContactsScreen> createState() => _ContactsScreenState();
 }
 
 class _ContactsScreenState extends State<ContactsScreen> {
-  void _addEditContact([Contact? contact]) {
-    TextEditingController nameCtrl = TextEditingController(text: contact?.name ?? '');
-    TextEditingController emailCtrl = TextEditingController(text: contact?.email ?? '');
+
+  void _showAddFriendDialog() {
+    TextEditingController emailCtrl = TextEditingController();
+    bool isAdding = false;
 
     showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-            title: Text(contact == null ? 'Thêm liên hệ' : 'Sửa liên hệ'),
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: const Text('Gửi lời mời kết bạn'),
             content: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Tên')),
-                  TextField(controller: emailCtrl, decoration: const InputDecoration(labelText: 'Email')),
-                ]
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Nhập email của người bạn muốn thêm:'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: emailCtrl,
+                  decoration: InputDecoration(
+                    hintText: 'ví dụ: abc@gmail.com',
+                    prefixIcon: const Icon(Icons.email),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy')),
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Hủy', style: TextStyle(color: Colors.grey))),
               FilledButton(
-                  onPressed: () {
-                    if (nameCtrl.text.isEmpty || emailCtrl.text.isEmpty) return;
-                    setState(() {
-                      if (contact == null) {
-                        AppState.contacts.add(Contact(id: DateTime.now().toString(), name: nameCtrl.text, email: emailCtrl.text));
-                        AppState.logActivity('Thêm danh bạ', 'Đã thêm ${nameCtrl.text}');
-                      } else {
-                        contact.name = nameCtrl.text;
-                        contact.email = emailCtrl.text;
-                        AppState.logActivity('Sửa danh bạ', 'Đã sửa thông tin của ${nameCtrl.text}');
-                      }
-                    });
+                onPressed: isAdding ? null : () async {
+                  if (emailCtrl.text.isEmpty) return;
+                  setDialogState(() => isAdding = true);
+                  
+                  // Gọi hàm gửi lời mời mới thay vì add trực tiếp
+                  String result = await FirebaseService.sendFriendRequest(emailCtrl.text);
+                  
+                  if (mounted) {
                     Navigator.pop(ctx);
-                  },
-                  child: const Text('Lưu')
-              )
-            ]
-        )
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(result == "SUCCESS" ? "Đã gửi lời mời thành công! Chờ người kia đồng ý nhé." : result),
+                        backgroundColor: result == "SUCCESS" ? Colors.green : Colors.red,
+                      )
+                    );
+                  }
+                },
+                child: isAdding 
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                    : const Text('Gửi lời mời'),
+              ),
+            ],
+          );
+        }
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Danh bạ của tôi')),
-      body: AppState.contacts.isEmpty
-          ? const Center(child: Text('Danh bạ trống', style: TextStyle(color: Colors.grey)))
-          : ListView.builder(
-        padding: const EdgeInsets.all(16),
-        itemCount: AppState.contacts.length,
-        itemBuilder: (context, index) {
-          final c = AppState.contacts[index];
-          return Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: Colors.grey.shade200)),
-            margin: const EdgeInsets.only(bottom: 12),
-            child: ListTile(
-              leading: CircleAvatar(backgroundColor: Colors.indigo.shade100, child: Text(c.name[0], style: const TextStyle(color: Colors.indigo, fontWeight: FontWeight.bold))),
-              title: Text(c.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text(c.email),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
+      appBar: AppBar(title: const Text('Danh bạ của tôi', style: TextStyle(fontWeight: FontWeight.bold))),
+      body: Column(
+        children: [
+          // KHU VỰC 1: LỜI MỜI KẾT BẠN (Chỉ hiện ra nếu có người gửi lời mời)
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseService.getFriendRequestsStream(),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData || snapshot.data!.docs.isEmpty) return const SizedBox(); 
+              
+              final requests = snapshot.data!.docs;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  IconButton(icon: const Icon(Icons.edit, color: Colors.blue), onPressed: () => _addEditContact(c)),
-                  IconButton(
-                    icon: const Icon(Icons.delete, color: Colors.red),
-                    onPressed: () {
-                      setState(() => AppState.contacts.removeAt(index));
-                      AppState.logActivity('Xóa danh bạ', 'Đã xóa ${c.name}');
+                  Container(
+                    width: double.infinity,
+                    color: Colors.orange.shade50,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Text('Lời mời kết bạn (${requests.length})', style: TextStyle(color: Colors.orange.shade900, fontWeight: FontWeight.bold)),
+                  ),
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(), // Để cuộn chung với màn hình chính
+                    itemCount: requests.length,
+                    itemBuilder: (context, index) {
+                      var reqData = requests[index].data() as Map<String, dynamic>;
+                      String reqId = requests[index].id;
+
+                      return ListTile(
+                        tileColor: Colors.orange.shade50.withOpacity(0.5),
+                        leading: CircleAvatar(backgroundImage: NetworkImage(reqData['fromAvatar'] ?? 'https://ui-avatars.com/api/?background=random')),
+                        title: Text(reqData['fromName'] ?? 'Người lạ', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text(reqData['from']),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.check_circle, color: Colors.green, size: 30),
+                              onPressed: () => FirebaseService.acceptFriendRequest(reqId, reqData),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.cancel, color: Colors.redAccent, size: 30),
+                              onPressed: () => FirebaseService.rejectFriendRequest(reqId),
+                            ),
+                          ],
+                        ),
+                      );
                     },
                   ),
+                  const Divider(height: 1, thickness: 1),
                 ],
-              ),
+              );
+            },
+          ),
+
+          // KHU VỰC 2: DANH BẠ CHÍNH CỦA MÌNH
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseService.getContactsStream(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.people_outline, size: 80, color: Colors.grey.shade300),
+                        const SizedBox(height: 16),
+                        const Text('Danh bạ trống', style: TextStyle(fontSize: 18, color: Colors.grey)),
+                        const Text('Nhấn dấu + để tìm bạn bè nhé!', style: TextStyle(color: Colors.grey)),
+                      ],
+                    ),
+                  );
+                }
+
+                final contacts = snapshot.data!.docs;
+
+                return ListView.builder(
+                  itemCount: contacts.length,
+                  itemBuilder: (context, index) {
+                    var contact = contacts[index].data() as Map<String, dynamic>;
+                    String docId = contacts[index].id;
+
+                    return ListTile(
+                      leading: CircleAvatar(backgroundImage: NetworkImage(contact['avatar'] ?? 'https://ui-avatars.com/api/?background=random')),
+                      title: Text(contact['name'] ?? 'Không tên', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(contact['email'] ?? ''),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.person_remove, color: Colors.redAccent),
+                        onPressed: () {
+                          FirebaseFirestore.instance.collection('contacts').doc(docId).delete();
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Đã hủy kết bạn')));
+                        },
+                      ),
+                    );
+                  },
+                );
+              },
             ),
-          );
-        },
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _addEditContact(),
-        icon: const Icon(Icons.add),
-        label: const Text('Thêm liên hệ'),
+        onPressed: _showAddFriendDialog,
+        icon: const Icon(Icons.person_add),
+        label: const Text('Thêm bạn'),
       ),
     );
   }
