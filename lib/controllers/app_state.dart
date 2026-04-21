@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'dart:math'; // THÊM THƯ VIỆN NÀY ĐỂ TẠO MÃ NGẪU NHIÊN
+import 'package:firebase_storage/firebase_storage.dart'; // <-- THÊM DÒNG NÀY ĐỂ DÙNG STORAGE
+import 'dart:math';
+import 'dart:typed_data'; // <-- THÊM DÒNG NÀY
 import '../models/app_models.dart';
 
 class AppState {
@@ -10,10 +12,10 @@ class AppState {
   static String currentUserRole = "user";
 
   static List<Note> notes = [];
-  static List<Note> allNotes = []; 
-  static List<Note> filteredNotes = []; 
-  static String searchQuery = ""; 
-  static String selectedLabel = "All"; 
+  static List<Note> allNotes = [];
+  static List<Note> filteredNotes = [];
+  static String searchQuery = "";
+  static String selectedLabel = "All";
   static List<dynamic> activities = [];
   static List<dynamic> contacts = [];
   static List<String> labels = ['Work', 'Personal', 'Study', 'Family'];
@@ -46,7 +48,22 @@ class FirebaseService {
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static String get currentUid => _auth.currentUser?.uid ?? "";
 
-  static String currentGroupId = ""; 
+  static String currentGroupId = "";
+
+  // --- HÀM UPLOAD FILE MỚI ---
+  static Future<String?> uploadAttachment(Uint8List fileBytes, String fileName) async {
+    if (currentUid.isEmpty) return null;
+    try {
+      // Lưu vào thư mục note_attachments / uid / ten_file
+      final storageRef = FirebaseStorage.instance.ref().child('note_attachments/$currentUid/${DateTime.now().millisecondsSinceEpoch}_$fileName');
+      final uploadTask = await storageRef.putData(fileBytes);
+      final downloadUrl = await uploadTask.ref.getDownloadURL();
+      return downloadUrl;
+    } catch (e) {
+      print("Lỗi upload file: $e");
+      return null;
+    }
+  }
 
   // --- 1. PHẦN HỒ SƠ NGƯỜI DÙNG ---
   static Future<void> updateUserProfile({String? name, String? avatar, String? role}) async {
@@ -74,9 +91,7 @@ class FirebaseService {
         'detail': detail,
         'timestamp': FieldValue.serverTimestamp(),
       });
-    } catch (e) {
-      print("Lỗi lưu lịch sử: $e");
-    }
+    } catch (e) {}
   }
 
   static Stream<QuerySnapshot> getActivitiesStream() {
@@ -85,10 +100,10 @@ class FirebaseService {
         .snapshots();
   }
 
-  // --- 3. PHẦN DANH BẠ (HỆ THỐNG LỜI MỜI) ---
+  // --- 3. PHẦN DANH BẠ ---
   static Future<String> sendFriendRequest(String email) async {
     if (currentUid.isEmpty) return "Lỗi: Chưa đăng nhập";
-    
+
     String targetEmail = email.toLowerCase().trim();
     String myEmail = AppState.currentUserEmail.toLowerCase().trim();
 
@@ -109,12 +124,6 @@ class FirebaseService {
           .where('to', isEqualTo: targetEmail)
           .get();
       if (checkRequest.docs.isNotEmpty) return "Bạn đã gửi lời mời cho người này rồi, hãy chờ họ phản hồi!";
-
-      final checkReverse = await _db.collection('friend_requests')
-          .where('from', isEqualTo: targetEmail)
-          .where('to', isEqualTo: myEmail)
-          .get();
-      if (checkReverse.docs.isNotEmpty) return "Người này đã gửi lời mời cho bạn, hãy kiểm tra danh sách bên trên!";
 
       await _db.collection('friend_requests').add({
         'from': myEmail,
@@ -180,9 +189,13 @@ class FirebaseService {
       'date': DateTime.now().toIso8601String(),
       'isTodo': note.isTodo,
       'todos': note.todos.map((t) => {'task': t.task, 'isDone': t.isDone}).toList(),
-      'sharedWith': [], 
+      'sharedWith': note.sharedWith,
       'color': note.coverColor.value,
-      'groupId': currentGroupId, 
+      'groupId': currentGroupId,
+      // --- CẬP NHẬT CÁC TRƯỜNG MỚI VÀO DATABASE ---
+      'hasReminder': note.hasReminder,
+      'reminderTime': note.reminderTime?.toIso8601String(),
+      'attachments': note.attachments,
     });
     await saveActivity("Thêm ghi chú", "Đã thêm: ${note.title}");
   }
@@ -197,10 +210,12 @@ class FirebaseService {
         'isTodo': note.isTodo,
         'todos': note.todos.map((t) => {'task': t.task, 'isDone': t.isDone}).toList(),
         'color': note.coverColor.value,
+        // --- CẬP NHẬT CÁC TRƯỜNG MỚI VÀO DATABASE ---
+        'hasReminder': note.hasReminder,
+        'reminderTime': note.reminderTime?.toIso8601String(),
+        'attachments': note.attachments,
       });
-    } catch (e) {
-      print("Lỗi cập nhật màu: $e");
-    }
+    } catch (e) {}
   }
 
   static Future<void> shareNote(String noteId, String targetEmail) async {
@@ -232,48 +247,56 @@ class FirebaseService {
   static Future<void> toggleUserBan(String targetUid, bool currentBanStatus) async {
     if (currentUid.isEmpty) return;
     try {
+      DocumentSnapshot targetUserDoc = await _db.collection('users').doc(targetUid).get();
+      if (targetUserDoc.exists) {
+        String role = targetUserDoc.get('role') ?? 'User';
+        if (role == 'Admin') return;
+      }
+
       await _db.collection('users').doc(targetUid).update({
-        'isBanned': !currentBanStatus, 
+        'isBanned': !currentBanStatus,
       });
-    } catch (e) {
-      print("Lỗi khi khóa/mở khóa tài khoản: $e");
-    }
+    } catch (e) {}
   }
 
-  // --- 6. PHẦN NHÓM (GROUPS) ĐÃ ĐƯỢC NÂNG CẤP MÃ NHÓM ---
-  
-  // Hàm tạo mã nhóm ngẫu nhiên 8 ký tự in hoa và số
+  static Future<void> changeUserRole(String targetUid, String newRole) async {
+    if (currentUid.isEmpty) return;
+    try {
+      await _db.collection('users').doc(targetUid).update({
+        'role': newRole,
+      });
+    } catch (e) {}
+  }
+
+  // --- 6. PHẦN NHÓM (GROUPS) ---
   static String generateGroupCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     Random rnd = Random();
     return String.fromCharCodes(Iterable.generate(8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
   }
 
-  // Tạo nhóm mới (Có sinh thêm mã code)
   static Future<void> createGroup(String groupName) async {
     if (currentUid.isEmpty) return;
     String code = generateGroupCode();
     await _db.collection('groups').add({
       'name': groupName,
       'leaderId': currentUid,
-      'members': [AppState.currentUserEmail.toLowerCase()], 
-      'groupCode': code, // LƯU MÃ NHÓM VÀO ĐÂY
+      'members': [AppState.currentUserEmail.toLowerCase()],
+      'groupCode': code,
       'createdAt': FieldValue.serverTimestamp(),
     });
   }
 
-  // Tham gia nhóm bằng Mã (Tự động chuyển mã thành chữ in hoa để so sánh)
   static Future<String> joinGroupByCode(String code) async {
     if (currentUid.isEmpty) return "Chưa đăng nhập";
-    
+
     try {
-      // Tìm nhóm có mã này
       var query = await _db.collection('groups').where('groupCode', isEqualTo: code.toUpperCase().trim()).get();
-      
+
       if (query.docs.isEmpty) {
         return "Mã nhóm không tồn tại! Vui lòng kiểm tra lại.";
       }
-      
+
       var groupDoc = query.docs.first;
       List<dynamic> members = groupDoc['members'] ?? [];
       String myEmail = AppState.currentUserEmail.toLowerCase();
@@ -282,11 +305,10 @@ class FirebaseService {
         return "Bạn đã ở trong nhóm này rồi!";
       }
 
-      // Thêm email mình vào nhóm
       await _db.collection('groups').doc(groupDoc.id).update({
         'members': FieldValue.arrayUnion([myEmail])
       });
-      
+
       return "SUCCESS";
     } catch (e) {
       return "Lỗi hệ thống: $e";

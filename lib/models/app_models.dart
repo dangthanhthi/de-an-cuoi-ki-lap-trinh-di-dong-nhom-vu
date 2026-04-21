@@ -17,6 +17,11 @@ class Note {
   List<TodoItem> todos;
   List<String> sharedWith;
 
+  // --- CÁC TRƯỜNG MỚI ĐỂ LƯU HẸN GIỜ & FILE ---
+  bool hasReminder;
+  DateTime? reminderTime;
+  List<String> attachments;
+
   Note({
     required this.id,
     required this.title,
@@ -27,6 +32,9 @@ class Note {
     this.isTodo = false,
     this.todos = const [],
     this.sharedWith = const [],
+    this.hasReminder = false,
+    this.reminderTime,
+    this.attachments = const [],
   });
 }
 

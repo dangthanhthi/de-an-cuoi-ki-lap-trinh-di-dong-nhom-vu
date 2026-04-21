@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart'; 
-import 'package:cloud_firestore/cloud_firestore.dart'; 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../controllers/app_state.dart';
 import 'main_screen.dart';
 
@@ -13,39 +13,41 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  
+
   String _selectedRole = 'User';
   bool _isLoading = false;
-  bool _isLoginMode = true; 
+  bool _isLoginMode = true;
 
-  // --- HÀM KIỂM TRA ĐỊNH DẠNG MẬT KHẨU TIÊU CHUẨN ---
   bool _isStrongPassword(String password) {
-    if (password.length < 8) return false; 
-    if (!RegExp(r'(?=.*[A-Z])').hasMatch(password)) return false; 
-    if (!RegExp(r'(?=.*[a-z])').hasMatch(password)) return false; 
-    if (!RegExp(r'(?=.*[0-9])').hasMatch(password)) return false; 
-    if (!RegExp(r'(?=.*[!@#$%^&*(),.?":{}|<>])').hasMatch(password)) return false; 
+    if (password.length < 8) return false;
+    if (!RegExp(r'(?=.*[A-Z])').hasMatch(password)) return false;
+    if (!RegExp(r'(?=.*[a-z])').hasMatch(password)) return false;
+    if (!RegExp(r'(?=.*[0-9])').hasMatch(password)) return false;
+    if (!RegExp(r'(?=.*[!@#$%^&*(),.?":{}|<>])').hasMatch(password)) return false;
     return true;
   }
 
   void _submit() async {
-    // Ép email về chữ thường tuyệt đối để không bị lỗi đồng bộ với Firebase
     final email = _emailController.text.trim().toLowerCase();
     final password = _passwordController.text.trim();
 
     if (email.isEmpty || password.isEmpty) {
-      _showError("Vui lòng nhập đầy đủ email và mật khẩu!");
+      _showError("Vui long nhap day du email va mat khau!");
       return;
     }
 
     if (!email.endsWith('@gmail.com')) {
-      _showError("Email không hợp lệ! Vui lòng sử dụng định dạng @gmail.com");
+      _showError("Email khong hop le! Vui long su dung dinh dang @gmail.com");
       return;
     }
 
     if (!_isLoginMode) {
+      if (_selectedRole == 'Admin') {
+        _showError("Khong the tao tai khoan voi quyen Admin!");
+        return;
+      }
       if (!_isStrongPassword(password)) {
-        _showError("Mật khẩu yếu! Cần ít nhất 8 ký tự, gồm chữ hoa, chữ thường, số và ký tự đặc biệt.");
+        _showError("Mat khau yeu! Can it nhat 8 ky tu, gom chu hoa, chu thuong, so va ky tu dac biet.");
         return;
       }
     }
@@ -54,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       UserCredential userCredential;
-      
+
       if (_isLoginMode) {
         userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
           email: email,
@@ -74,31 +76,28 @@ class _LoginScreenState extends State<LoginScreen> {
 
         if (userDoc.exists) {
           final data = userDoc.data()!;
-          
-          // --- KIỂM TRA XEM TÀI KHOẢN CÓ BỊ KHÓA KHÔNG ---
+
           bool isBanned = data['isBanned'] ?? false;
           if (isBanned) {
             await FirebaseAuth.instance.signOut();
-            _showError("Tài khoản này đã bị khóa do vi phạm chính sách! Vui lòng liên hệ Admin.");
+            _showError("Tai khoan nay da bi khoa do vi pham chinh sach! Vui long lien he Admin.");
             setState(() => _isLoading = false);
-            return; 
+            return;
           }
 
           final actualRole = data['role'] ?? "User";
 
-          // --- KIỂM TRA QUYỀN LÚC ĐĂNG NHẬP ---
           if (_isLoginMode && actualRole != _selectedRole) {
             await FirebaseAuth.instance.signOut();
-            _showError("Lỗi truy cập: Tài khoản của bạn là $actualRole, không thể đăng nhập bằng quyền $_selectedRole!");
+            _showError("Loi truy cap: Tai khoan cua ban la $actualRole, khong the dang nhap bang quyen $_selectedRole!");
             setState(() => _isLoading = false);
-            return; 
+            return;
           }
 
           AppState.currentUserName = data['name'] ?? "User";
-          AppState.currentUserAvatar = data['avatar'] ?? "https://ui-avatars.com/api/?name=User&background=random";
+          AppState.currentUserAvatar = data['avatar'] ?? "https://ui-avatars.com/api/?background=random";
           AppState.currentUserRole = actualRole;
         } else {
-          // Khởi tạo cho người dùng mới đăng ký
           AppState.currentUserName = user.email?.split('@')[0] ?? "User";
           AppState.currentUserRole = _selectedRole;
           AppState.currentUserAvatar = user.photoURL ?? "https://ui-avatars.com/api/?name=${AppState.currentUserName}&background=random";
@@ -112,27 +111,27 @@ class _LoginScreenState extends State<LoginScreen> {
         AppState.currentUserEmail = user.email ?? email;
       }
 
-      AppState.logActivity(_isLoginMode ? 'Đăng nhập' : 'Đăng ký', 'Thành công với vai trò ${AppState.currentUserRole}');
+      AppState.logActivity(_isLoginMode ? 'Dang nhap' : 'Dang ky', 'Thanh cong voi vai tro ${AppState.currentUserRole}');
 
       if (mounted) {
         Navigator.pushReplacement(context, MaterialPageRoute(builder: (context) => const MainScreen()));
       }
     } on FirebaseAuthException catch (e) {
-      String message = "Đã xảy ra lỗi";
+      String message = "Da xay ra loi";
       if (e.code == 'user-not-found') {
-        message = "Email này chưa được đăng ký";
+        message = "Email nay chua duoc dang ky";
       } else if (e.code == 'wrong-password') {
-        message = "Sai mật khẩu, vui lòng thử lại";
-      } else if (e.code == 'invalid-credential') { 
-        message = "Tài khoản hoặc mật khẩu không chính xác";
+        message = "Sai mat khau, vui long thu lai";
+      } else if (e.code == 'invalid-credential') {
+        message = "Tai khoan hoac mat khau khong chinh xac";
       } else if (e.code == 'email-already-in-use') {
-        message = "Email này đã được đăng ký! Vui lòng chọn Đăng nhập.";
+        message = "Email nay da duoc dang ky! Vui long chon Dang nhap.";
       } else if (e.code == 'invalid-email') {
-        message = "Định dạng email không hợp lệ";
-      } 
+        message = "Dinh dang email khong hop le";
+      }
       _showError(message);
     } catch (e) {
-      _showError("Lỗi hệ thống: $e");
+      _showError("Loi he thong: $e");
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -141,9 +140,9 @@ class _LoginScreenState extends State<LoginScreen> {
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)), 
+        content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
         backgroundColor: Colors.red.shade600,
-        behavior: SnackBarBehavior.floating, 
+        behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
@@ -182,15 +181,15 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 16),
                       const Text('SNote', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.indigo)),
                       const SizedBox(height: 8),
-                      Text(_isLoginMode ? 'Chào mừng trở lại' : 'Tạo tài khoản mới', style: const TextStyle(color: Colors.grey)),
+                      Text(_isLoginMode ? 'Chao mung tro lai' : 'Tao tai khoan moi', style: const TextStyle(color: Colors.grey)),
                       const SizedBox(height: 32),
-                      
+
                       TextField(
-                        controller: _emailController, 
+                        controller: _emailController,
                         keyboardType: TextInputType.emailAddress,
                         decoration: InputDecoration(
                           labelText: 'Email',
-                          hintText: 'ví dụ: abc@gmail.com',
+                          hintText: 'vi du: abc@gmail.com',
                           prefixIcon: const Icon(Icons.email_outlined),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           filled: true,
@@ -198,13 +197,13 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      
+
                       TextField(
-                        controller: _passwordController, 
+                        controller: _passwordController,
                         obscureText: true,
                         decoration: InputDecoration(
-                          labelText: 'Mật khẩu',
-                          hintText: _isLoginMode ? 'Nhập mật khẩu' : 'Hoa, thường, số, ký tự đ.biệt',
+                          labelText: 'Mat khau',
+                          hintText: _isLoginMode ? 'Nhap mat khau' : 'Hoa, thuong, so, ky tu d.biet',
                           prefixIcon: const Icon(Icons.lock_outline),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           filled: true,
@@ -212,21 +211,21 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      
+
                       DropdownButtonFormField<String>(
                         value: _selectedRole,
                         decoration: InputDecoration(
-                          labelText: 'Vai trò',
+                          labelText: 'Vai tro',
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           prefixIcon: const Icon(Icons.admin_panel_settings_outlined),
                           filled: true,
                           fillColor: Colors.grey.shade50,
                         ),
-                        items: ['Admin', 'User'].map((role) => DropdownMenuItem(value: role, child: Text(role))).toList(),
+                        items: (_isLoginMode ? ['Admin', 'User'] : ['User']).map((role) => DropdownMenuItem(value: role, child: Text(role))).toList(),
                         onChanged: (val) => setState(() => _selectedRole = val!),
                       ),
                       const SizedBox(height: 24),
-                      
+
                       SizedBox(
                         width: double.infinity,
                         height: 50,
@@ -237,7 +236,7 @@ class _LoginScreenState extends State<LoginScreen> {
                           ),
                           child: _isLoading
                               ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                              : Text(_isLoginMode ? 'Đăng nhập' : 'Đăng ký', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              : Text(_isLoginMode ? 'Dang nhap' : 'Dang ky', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                         ),
                       ),
 
@@ -247,9 +246,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             _isLoginMode = !_isLoginMode;
                             _emailController.clear();
                             _passwordController.clear();
+                            if (!_isLoginMode) _selectedRole = 'User';
                           });
                         },
-                        child: Text(_isLoginMode ? "Chưa có tài khoản? Đăng ký ngay" : "Đã có tài khoản? Đăng nhập"),
+                        child: Text(_isLoginMode ? "Chua co tai khoan? Dang ky ngay" : "Da co tai khoan? Dang nhap"),
                       ),
                     ],
                   ),
