@@ -105,8 +105,11 @@ void _shareNote() async {
                                       secondary: CircleAvatar(backgroundImage: NetworkImage(friend['avatar'] ?? 'https://ui-avatars.com/api/?background=random')),
                                       onChanged: (bool? val) {
                                         setModalState(() {
-                                          if (val == true) selectedContacts.add(friendEmail);
-                                          else selectedContacts.remove(friendEmail);
+                                          if (val == true) {
+                                            selectedContacts.add(friendEmail);
+                                          } else {
+                                            selectedContacts.remove(friendEmail);
+                                          }
                                         });
                                       },
                                     );
