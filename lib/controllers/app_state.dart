@@ -1,35 +1,118 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart'; // <-- THÊM DÒNG NÀY ĐỂ DÙNG STORAGE
-import 'dart:math';
-import 'dart:typed_data'; // <-- THÊM DÒNG NÀY
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/app_models.dart';
+import 'local_service.dart';
+import 'firebase_service.dart';
+
+export 'firebase_service.dart';
 
 class AppState {
   static String currentUserEmail = "";
   static String currentUserName = "";
-  static String currentUserAvatar = "https://ui-avatars.com/api/?background=random";
-  static String currentUserRole = "user";
+  static String currentUserAvatar =
+      "https://ui-avatars.com/api/?background=random";
+  static String currentUserRole = "User";
 
   static List<Note> notes = [];
   static List<Note> allNotes = [];
   static List<Note> filteredNotes = [];
   static String searchQuery = "";
-  static String selectedLabel = "All";
+  static String selectedLabel = "Tất cả";
   static List<dynamic> activities = [];
   static List<dynamic> contacts = [];
-  static List<String> labels = ['Work', 'Personal', 'Study', 'Family'];
+  static const String otherLabel = 'Khác';
+  static List<String> labels = [
+    'Công việc',
+    'Cá nhân',
+    'Học tập',
+    'Gia đình',
+    'Du lịch',
+    otherLabel,
+  ];
+  static final List<Color> noteColors = [
+    Colors.blue.shade100,
+    Colors.red.shade100,
+    Colors.green.shade100,
+    Colors.orange.shade100,
+    Colors.purple.shade100,
+    Colors.yellow.shade100,
+    Colors.teal.shade100,
+    Colors.pink.shade100,
+    Colors.indigo.shade100,
+    Colors.brown.shade100,
+    Colors.cyan.shade100,
+    Colors.lime.shade100,
+  ];
+  static final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(
+    ThemeMode.light,
+  );
+  static final ValueNotifier<bool> notificationsEnabledNotifier = ValueNotifier(
+    true,
+  );
+  
+  static const String _prefDarkModeKey = 'app_dark_mode';
+  static const String _prefNotificationsKey = 'app_notifications_enabled';
+
+  static bool get isDarkModeActive {
+    final themeMode = themeModeNotifier.value;
+    if (themeMode == ThemeMode.system) {
+      return WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+          Brightness.dark;
+    }
+    return themeMode == ThemeMode.dark;
+  }
+
+  static Future<void> setLocalThemeMode(bool darkMode) async {
+    themeModeNotifier.value = darkMode ? ThemeMode.dark : ThemeMode.light;
+    await persistLocalSettings(darkMode: darkMode);
+    
+    // Sync to Firestore if logged in
+    if (currentUserEmail.isNotEmpty) {
+      await FirebaseService.updateUserSettings(darkMode: darkMode);
+    }
+  }
+
+  static Future<void> loadLocalSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.containsKey(_prefDarkModeKey)) {
+      themeModeNotifier.value = prefs.getBool(_prefDarkModeKey) == true
+          ? ThemeMode.dark
+          : ThemeMode.light;
+    }
+    if (prefs.containsKey(_prefNotificationsKey)) {
+      notificationsEnabledNotifier.value =
+          prefs.getBool(_prefNotificationsKey) ?? true;
+    }
+  }
+
+  static Future<void> persistLocalSettings({
+    bool? darkMode,
+    bool? notificationsEnabled,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (darkMode != null) {
+      await prefs.setBool(_prefDarkModeKey, darkMode);
+    }
+    if (notificationsEnabled != null) {
+      await prefs.setBool(_prefNotificationsKey, notificationsEnabled);
+    }
+  }
 
   static void clearAllData() {
     currentUserEmail = "";
     currentUserName = "";
     currentUserAvatar = "https://ui-avatars.com/api/?background=random";
-    currentUserRole = "user";
+    currentUserRole = "User";
+    FirebaseService.currentGroupId = "";
     notes.clear();
     allNotes.clear();
     filteredNotes.clear();
     activities.clear();
     contacts.clear();
+    LocalService.clearSyncQueue();
+    LocalService.clearNotesCache();
   }
 
   static void logActivity(dynamic arg1, [dynamic arg2]) {
@@ -41,309 +124,80 @@ class AppState {
   static void addActivity(String action) {
     FirebaseService.saveActivity("Hoạt động", action);
   }
-}
 
-class FirebaseService {
-  static final FirebaseFirestore _db = FirebaseFirestore.instance;
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
-  static String get currentUid => _auth.currentUser?.uid ?? "";
+  static void applyUserSettings(Map<String, dynamic>? settings) {
+    if (settings == null) return;
+    
+    final hasDarkMode = settings['darkMode'] is bool;
+    final hasNotificationsEnabled = settings['notificationsEnabled'] is bool;
+    
+    if (hasDarkMode) {
+      final darkMode = settings['darkMode'] as bool;
+      if (themeModeNotifier.value != (darkMode ? ThemeMode.dark : ThemeMode.light)) {
+        themeModeNotifier.value = darkMode ? ThemeMode.dark : ThemeMode.light;
+      }
+    }
+    
+    if (hasNotificationsEnabled) {
+      notificationsEnabledNotifier.value = settings['notificationsEnabled'] as bool;
+    }
 
-  static String currentGroupId = "";
+    persistLocalSettings(
+      darkMode: hasDarkMode ? settings['darkMode'] as bool : null,
+      notificationsEnabled: hasNotificationsEnabled
+          ? settings['notificationsEnabled'] as bool
+          : null,
+    );
+  }
 
-  // --- HÀM UPLOAD FILE MỚI ---
-  static Future<String?> uploadAttachment(Uint8List fileBytes, String fileName) async {
-    if (currentUid.isEmpty) return null;
+  static Future<String?> hydrateSignedInUser(
+    User user, {
+    String? fallbackEmail,
+  }) async {
+    currentUserEmail = user.email ?? fallbackEmail ?? '';
+
     try {
-      // Lưu vào thư mục note_attachments / uid / ten_file
-      final storageRef = FirebaseStorage.instance.ref().child('note_attachments/$currentUid/${DateTime.now().millisecondsSinceEpoch}_$fileName');
-      final uploadTask = await storageRef.putData(fileBytes);
-      final downloadUrl = await uploadTask.ref.getDownloadURL();
-      return downloadUrl;
-    } catch (e) {
-      print("Lỗi upload file: $e");
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+
+      if (userDoc.exists) {
+        final data = userDoc.data()!;
+        final isDeleted = data['isDeleted'] == true;
+        final isBanned = data['isBanned'] == true;
+        if (isDeleted || isBanned) {
+          await FirebaseAuth.instance.signOut();
+          clearAllData();
+          return isDeleted
+              ? 'Tài khoản này đã bị xóa khỏi hệ thống.'
+              : 'Tài khoản này đã bị khóa do vi phạm chính sách! Vui lòng liên hệ Admin.';
+        }
+
+        currentUserName = (data['name'] ?? 'User').toString();
+        currentUserAvatar =
+            (data['avatar'] ?? "https://ui-avatars.com/api/?background=random")
+                .toString();
+        currentUserRole = (data['role'] ?? 'User').toString();
+        if (data['settings'] is Map<String, dynamic>) {
+          applyUserSettings(data['settings'] as Map<String, dynamic>);
+        }
+        return null;
+      }
+
+      // Create new user if not exists
+      currentUserName = user.email?.split('@')[0] ?? 'User';
+      currentUserRole = 'User';
+      currentUserAvatar =
+          user.photoURL ??
+          "https://ui-avatars.com/api/?name=$currentUserName&background=random";
+      
+      await FirebaseService.hydrateUser(user, fallbackEmail: fallbackEmail);
       return null;
-    }
-  }
-
-  // --- 1. PHẦN HỒ SƠ NGƯỜI DÙNG ---
-  static Future<void> updateUserProfile({String? name, String? avatar, String? role}) async {
-    if (currentUid.isEmpty) return;
-    await _db.collection('users').doc(currentUid).set({
-      'name': name ?? AppState.currentUserName,
-      'email': AppState.currentUserEmail,
-      'avatar': avatar ?? AppState.currentUserAvatar,
-      'role': role ?? AppState.currentUserRole,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-  }
-
-  static Stream<DocumentSnapshot> getUserProfileStream() {
-    return _db.collection('users').doc(currentUid).snapshots();
-  }
-
-  // --- 2. PHẦN LỊCH SỬ HOẠT ĐỘNG ---
-  static Future<void> saveActivity(String action, String detail) async {
-    if (currentUid.isEmpty) return;
-    try {
-      await _db.collection('activities').add({
-        'userId': currentUid,
-        'action': action,
-        'detail': detail,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-    } catch (e) {}
-  }
-
-  static Stream<QuerySnapshot> getActivitiesStream() {
-    return _db.collection('activities')
-        .where('userId', isEqualTo: currentUid)
-        .snapshots();
-  }
-
-  // --- 3. PHẦN DANH BẠ ---
-  static Future<String> sendFriendRequest(String email) async {
-    if (currentUid.isEmpty) return "Lỗi: Chưa đăng nhập";
-
-    String targetEmail = email.toLowerCase().trim();
-    String myEmail = AppState.currentUserEmail.toLowerCase().trim();
-
-    if (targetEmail == myEmail) return "Không thể tự kết bạn với chính mình!";
-
-    try {
-      final userQuery = await _db.collection('users').where('email', isEqualTo: targetEmail).get();
-      if (userQuery.docs.isEmpty) return "Tài khoản không tồn tại trên hệ thống!";
-
-      final checkExist = await _db.collection('contacts')
-          .where('userId', isEqualTo: currentUid)
-          .where('email', isEqualTo: targetEmail)
-          .get();
-      if (checkExist.docs.isNotEmpty) return "Người này đã có trong danh bạ của bạn rồi!";
-
-      final checkRequest = await _db.collection('friend_requests')
-          .where('from', isEqualTo: myEmail)
-          .where('to', isEqualTo: targetEmail)
-          .get();
-      if (checkRequest.docs.isNotEmpty) return "Bạn đã gửi lời mời cho người này rồi, hãy chờ họ phản hồi!";
-
-      await _db.collection('friend_requests').add({
-        'from': myEmail,
-        'to': targetEmail,
-        'fromName': AppState.currentUserName,
-        'fromAvatar': AppState.currentUserAvatar,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      return "SUCCESS";
     } catch (e) {
-      return "Lỗi hệ thống: $e";
+      return "Lỗi đồng bộ dữ liệu: $e";
     }
-  }
-
-  static Stream<QuerySnapshot> getFriendRequestsStream() {
-    String myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    return _db.collection('friend_requests')
-        .where('to', isEqualTo: myEmail)
-        .snapshots();
-  }
-
-  static Future<void> acceptFriendRequest(String requestId, Map<String, dynamic> requestData) async {
-    await _db.collection('contacts').add({
-      'userId': currentUid,
-      'email': requestData['from'],
-      'name': requestData['fromName'],
-      'avatar': requestData['fromAvatar'],
-      'addedAt': FieldValue.serverTimestamp(),
-    });
-
-    final otherUserQuery = await _db.collection('users').where('email', isEqualTo: requestData['from']).get();
-    if (otherUserQuery.docs.isNotEmpty) {
-      String otherUid = otherUserQuery.docs.first.id;
-      await _db.collection('contacts').add({
-        'userId': otherUid,
-        'email': AppState.currentUserEmail,
-        'name': AppState.currentUserName,
-        'avatar': AppState.currentUserAvatar,
-        'addedAt': FieldValue.serverTimestamp(),
-      });
-    }
-    await _db.collection('friend_requests').doc(requestId).delete();
-  }
-
-  static Future<void> rejectFriendRequest(String requestId) async {
-    await _db.collection('friend_requests').doc(requestId).delete();
-  }
-
-  static Stream<QuerySnapshot> getContactsStream() {
-    return _db.collection('contacts')
-        .where('userId', isEqualTo: currentUid)
-        .snapshots();
-  }
-
-  // --- 4. PHẦN GHI CHÚ ---
-  static Future<void> addNote(Note note) async {
-    if (currentUid.isEmpty) return;
-    await _db.collection('notes').add({
-      'title': note.title,
-      'content': note.content,
-      'label': note.label,
-      'userId': currentUid,
-      'date': DateTime.now().toIso8601String(),
-      'isTodo': note.isTodo,
-      'todos': note.todos.map((t) => {'task': t.task, 'isDone': t.isDone}).toList(),
-      'sharedWith': note.sharedWith,
-      'color': note.coverColor.value,
-      'groupId': currentGroupId,
-      // --- CẬP NHẬT CÁC TRƯỜNG MỚI VÀO DATABASE ---
-      'hasReminder': note.hasReminder,
-      'reminderTime': note.reminderTime?.toIso8601String(),
-      'attachments': note.attachments,
-    });
-    await saveActivity("Thêm ghi chú", "Đã thêm: ${note.title}");
-  }
-
-  static Future<void> updateNote(String noteId, Note note) async {
-    if (currentUid.isEmpty || noteId.isEmpty) return;
-    try {
-      await _db.collection('notes').doc(noteId).update({
-        'title': note.title,
-        'content': note.content,
-        'label': note.label,
-        'isTodo': note.isTodo,
-        'todos': note.todos.map((t) => {'task': t.task, 'isDone': t.isDone}).toList(),
-        'color': note.coverColor.value,
-        // --- CẬP NHẬT CÁC TRƯỜNG MỚI VÀO DATABASE ---
-        'hasReminder': note.hasReminder,
-        'reminderTime': note.reminderTime?.toIso8601String(),
-        'attachments': note.attachments,
-      });
-    } catch (e) {}
-  }
-
-  static Future<void> shareNote(String noteId, String targetEmail) async {
-    if (noteId.isEmpty || targetEmail.isEmpty) return;
-    await _db.collection('notes').doc(noteId).update({
-      'sharedWith': FieldValue.arrayUnion([targetEmail.toLowerCase()])
-    });
-    await saveActivity("Chia sẻ ghi chú", "Đã chia sẻ cho $targetEmail");
-  }
-
-  static Stream<QuerySnapshot> getMyNotesStream() {
-    return _db.collection('notes')
-        .where('userId', isEqualTo: currentUid)
-        .snapshots();
-  }
-
-  static Stream<QuerySnapshot> getSharedNotesStream() {
-    String safeEmail = AppState.currentUserEmail.toLowerCase().trim();
-    return _db.collection('notes')
-        .where('sharedWith', arrayContains: safeEmail)
-        .snapshots();
-  }
-
-  // --- 5. PHẦN ADMIN: QUẢN LÝ TÀI KHOẢN ---
-  static Stream<QuerySnapshot> getAllUsersStream() {
-    return _db.collection('users').snapshots();
-  }
-
-  static Future<void> toggleUserBan(String targetUid, bool currentBanStatus) async {
-    if (currentUid.isEmpty) return;
-    try {
-      DocumentSnapshot targetUserDoc = await _db.collection('users').doc(targetUid).get();
-      if (targetUserDoc.exists) {
-        String role = targetUserDoc.get('role') ?? 'User';
-        if (role == 'Admin') return;
-      }
-
-      await _db.collection('users').doc(targetUid).update({
-        'isBanned': !currentBanStatus,
-      });
-    } catch (e) {}
-  }
-
-  static Future<void> changeUserRole(String targetUid, String newRole) async {
-    if (currentUid.isEmpty) return;
-    try {
-      await _db.collection('users').doc(targetUid).update({
-        'role': newRole,
-      });
-    } catch (e) {}
-  }
-
-  // --- 6. PHẦN NHÓM (GROUPS) ---
-  static String generateGroupCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    Random rnd = Random();
-    return String.fromCharCodes(Iterable.generate(8, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
-  }
-
-  static Future<void> createGroup(String groupName) async {
-    if (currentUid.isEmpty) return;
-    String code = generateGroupCode();
-    await _db.collection('groups').add({
-      'name': groupName,
-      'leaderId': currentUid,
-      'members': [AppState.currentUserEmail.toLowerCase()],
-      'groupCode': code,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  static Future<String> joinGroupByCode(String code) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-
-    try {
-      var query = await _db.collection('groups').where('groupCode', isEqualTo: code.toUpperCase().trim()).get();
-
-      if (query.docs.isEmpty) {
-        return "Mã nhóm không tồn tại! Vui lòng kiểm tra lại.";
-      }
-
-      var groupDoc = query.docs.first;
-      List<dynamic> members = groupDoc['members'] ?? [];
-      String myEmail = AppState.currentUserEmail.toLowerCase();
-
-      if (members.contains(myEmail)) {
-        return "Bạn đã ở trong nhóm này rồi!";
-      }
-
-      await _db.collection('groups').doc(groupDoc.id).update({
-        'members': FieldValue.arrayUnion([myEmail])
-      });
-
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi hệ thống: $e";
-    }
-  }
-
-  static Stream<QuerySnapshot> getMyGroupsStream() {
-    return _db.collection('groups')
-        .where('members', arrayContains: AppState.currentUserEmail.toLowerCase())
-        .snapshots();
-  }
-
-  static Future<void> addMemberToGroup(String groupId, String memberEmail) async {
-    await _db.collection('groups').doc(groupId).update({
-      'members': FieldValue.arrayUnion([memberEmail.toLowerCase()])
-    });
-  }
-
-  static Future<void> removeMemberFromGroup(String groupId, String memberEmail) async {
-    await _db.collection('groups').doc(groupId).update({
-      'members': FieldValue.arrayRemove([memberEmail.toLowerCase()])
-    });
-  }
-
-  static Future<void> deleteGroup(String groupId) async {
-    await _db.collection('groups').doc(groupId).delete();
-    var notes = await _db.collection('notes').where('groupId', isEqualTo: groupId).get();
-    for (var doc in notes.docs) {
-      await doc.reference.delete();
-    }
-  }
-
-  static Stream<QuerySnapshot> getGroupNotesStream(String groupId) {
-    return _db.collection('notes')
-        .where('groupId', isEqualTo: groupId)
-        .snapshots();
   }
 }
+
+
