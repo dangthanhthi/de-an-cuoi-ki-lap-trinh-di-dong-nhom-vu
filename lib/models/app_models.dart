@@ -35,8 +35,8 @@ class TodoItem {
     this.fontSize = 16.0,
     this.priority = 'none',
     List<String>? attachments,
-  })  : status = status ?? (isDone ? TodoStatus.done : TodoStatus.todo),
-        attachments = attachments ?? [];
+  }) : status = status ?? (isDone ? TodoStatus.done : TodoStatus.todo),
+       attachments = attachments ?? [];
 
   TodoItem copyWith({
     String? task,
@@ -182,6 +182,12 @@ class TodoItem {
       isUnderlined: json['isUnderlined'] == true,
       isUppercase: json['isUppercase'] == true,
       fontSize: (json['fontSize'] ?? 16.0).toDouble(),
+      priority: (json['priority'] ?? 'none').toString(),
+      attachments:
+          (json['attachments'] as List?)
+              ?.map((item) => item.toString())
+              .toList() ??
+          [],
     );
   }
 }
@@ -316,6 +322,22 @@ class Note {
   List<String> pinnedBy;
   List<String> viewedBy;
   List<String> hiddenBy;
+  String status;
+
+  // New fields
+  bool titleIsStrikethrough;
+  bool contentIsStrikethrough;
+  bool isArchived;
+  bool isLocked;
+  bool isShared;
+  bool isHidden;
+  bool isFavorite;
+  bool isChecklist;
+  int? backgroundColor;
+  String userId;
+  List<String> assignedTo;
+  DateTime? lastViewedAt;
+  int viewCount;
 
   Note({
     required this.id,
@@ -325,11 +347,13 @@ class Note {
     this.titleIsBold = true,
     this.titleIsItalic = false,
     this.titleIsUnderlined = false,
+    this.titleIsStrikethrough = false,
     this.titleFontSize = 26.0,
     this.contentTextColor = '',
     this.contentIsBold = false,
     this.contentIsItalic = false,
     this.contentIsUnderlined = false,
+    this.contentIsStrikethrough = false,
     this.contentFontSize = 17.0,
     required this.label,
     required this.date,
@@ -350,6 +374,18 @@ class Note {
     this.pinnedBy = const [],
     this.viewedBy = const [],
     this.hiddenBy = const [],
+    this.isArchived = false,
+    this.isLocked = false,
+    this.isShared = false,
+    this.isHidden = false,
+    this.isFavorite = false,
+    this.isChecklist = false,
+    this.backgroundColor,
+    this.userId = '',
+    this.assignedTo = const [],
+    this.lastViewedAt,
+    this.viewCount = 0,
+    this.status = TodoStatus.todo,
   });
 
   Note copyWith({
@@ -385,6 +421,20 @@ class Note {
     List<String>? pinnedBy,
     List<String>? viewedBy,
     List<String>? hiddenBy,
+    bool? titleIsStrikethrough,
+    bool? contentIsStrikethrough,
+    bool? isArchived,
+    bool? isLocked,
+    bool? isShared,
+    bool? isHidden,
+    bool? isFavorite,
+    bool? isChecklist,
+    int? backgroundColor,
+    String? userId,
+    List<String>? assignedTo,
+    DateTime? lastViewedAt,
+    int? viewCount,
+    String? status,
   }) {
     return Note(
       id: id ?? this.id,
@@ -394,11 +444,13 @@ class Note {
       titleIsBold: titleIsBold ?? this.titleIsBold,
       titleIsItalic: titleIsItalic ?? this.titleIsItalic,
       titleIsUnderlined: titleIsUnderlined ?? this.titleIsUnderlined,
+      titleIsStrikethrough: titleIsStrikethrough ?? this.titleIsStrikethrough,
       titleFontSize: titleFontSize ?? this.titleFontSize,
       contentTextColor: contentTextColor ?? this.contentTextColor,
       contentIsBold: contentIsBold ?? this.contentIsBold,
       contentIsItalic: contentIsItalic ?? this.contentIsItalic,
       contentIsUnderlined: contentIsUnderlined ?? this.contentIsUnderlined,
+      contentIsStrikethrough: contentIsStrikethrough ?? this.contentIsStrikethrough,
       contentFontSize: contentFontSize ?? this.contentFontSize,
       label: label ?? this.label,
       date: date ?? this.date,
@@ -419,6 +471,18 @@ class Note {
       pinnedBy: pinnedBy ?? this.pinnedBy,
       viewedBy: viewedBy ?? this.viewedBy,
       hiddenBy: hiddenBy ?? this.hiddenBy,
+      isArchived: isArchived ?? this.isArchived,
+      isLocked: isLocked ?? this.isLocked,
+      isShared: isShared ?? this.isShared,
+      isHidden: isHidden ?? this.isHidden,
+      isFavorite: isFavorite ?? this.isFavorite,
+      isChecklist: isChecklist ?? this.isChecklist,
+      backgroundColor: backgroundColor ?? this.backgroundColor,
+      userId: userId ?? this.userId,
+      assignedTo: assignedTo ?? this.assignedTo,
+      lastViewedAt: lastViewedAt ?? this.lastViewedAt,
+      viewCount: viewCount ?? this.viewCount,
+      status: status ?? this.status,
     );
   }
 
@@ -451,6 +515,20 @@ class Note {
       'pinnedBy': pinnedBy,
       'viewedBy': viewedBy,
       'hiddenBy': hiddenBy,
+      'titleIsStrikethrough': titleIsStrikethrough,
+      'contentIsStrikethrough': contentIsStrikethrough,
+      'isArchived': isArchived,
+      'isLocked': isLocked,
+      'isShared': isShared,
+      'isHidden': isHidden,
+      'isFavorite': isFavorite,
+      'isChecklist': isChecklist,
+      'backgroundColor': backgroundColor,
+      'userId': userId,
+      'assignedTo': assignedTo,
+      'lastViewedAt': lastViewedAt?.toIso8601String(),
+      'viewCount': viewCount,
+      'status': status,
     };
   }
 
@@ -476,12 +554,16 @@ class Note {
       todos: (json['todos'] as List? ?? [])
           .map((t) => TodoItem.fromJson(t))
           .toList(),
-      sharedWith: (json['sharedWith'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      sharedWith:
+          (json['sharedWith'] as List?)?.map((e) => e.toString()).toList() ??
+          [],
       hasReminder: json['hasReminder'] ?? false,
       reminderTime: json['reminderTime'] != null
           ? DateTime.tryParse(json['reminderTime'])
           : null,
-      attachments: (json['attachments'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      attachments:
+          (json['attachments'] as List?)?.map((e) => e.toString()).toList() ??
+          [],
       isPinned: json['isPinned'] ?? false,
       priority: (json['priority'] ?? NotePriority.none).toString(),
       createdByEmail: (json['createdByEmail'] ?? '').toString(),
@@ -489,9 +571,26 @@ class Note {
       groupId: (json['groupId'] ?? '').toString(),
       groupName: (json['groupName'] ?? '').toString(),
       isRichText: json['isRichText'] ?? false,
-      pinnedBy: (json['pinnedBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
-      viewedBy: (json['viewedBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
-      hiddenBy: (json['hiddenBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      pinnedBy:
+          (json['pinnedBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      viewedBy:
+          (json['viewedBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      hiddenBy:
+          (json['hiddenBy'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      titleIsStrikethrough: json['titleIsStrikethrough'] == true,
+      contentIsStrikethrough: json['contentIsStrikethrough'] == true,
+      isArchived: json['isArchived'] == true,
+      isLocked: json['isLocked'] == true,
+      isShared: json['isShared'] == true,
+      isHidden: json['isHidden'] == true,
+      isFavorite: json['isFavorite'] == true,
+      isChecklist: json['isChecklist'] == true,
+      backgroundColor: json['backgroundColor'] as int?,
+      userId: (json['userId'] ?? '').toString(),
+      assignedTo: (json['assignedTo'] as List?)?.map((e) => e.toString()).toList() ?? [],
+      lastViewedAt: json['lastViewedAt'] != null ? DateTime.tryParse(json['lastViewedAt']) : null,
+      viewCount: (json['viewCount'] ?? 0) as int,
+      status: TodoStatus.normalize((json['status'] ?? '').toString()),
     );
   }
 
@@ -506,6 +605,7 @@ class Note {
     if (createdByEmail.toLowerCase().trim() == myEmail) return false;
     return !viewedBy.contains(myEmail);
   }
+
   Color? get resolvedTitleColor {
     if (titleTextColor.isEmpty) return null;
     try {
@@ -541,4 +641,108 @@ class Contact {
   Contact({required this.id, required this.name, required this.email});
 }
 
+class ChatMessage {
+  final String id;
+  final String senderEmail;
+  final String senderName;
+  final String text;
+  final List<String> attachments;
+  final DateTime? createdAt;
+  final String replyToId;
+  final String replyToText;
+  final String replyToSender;
+  final List<String> seenBy;
+  final bool isRecalled;
+  final bool isEdited;
+  final bool isPinned;
+  final Map<String, String> reactions; // email -> emoji
 
+  ChatMessage({
+    required this.id,
+    required this.senderEmail,
+    required this.senderName,
+    required this.text,
+    this.attachments = const [],
+    this.createdAt,
+    this.replyToId = '',
+    this.replyToText = '',
+    this.replyToSender = '',
+    this.seenBy = const [],
+    this.isRecalled = false,
+    this.isEdited = false,
+    this.isPinned = false,
+    this.reactions = const {},
+  });
+
+  factory ChatMessage.fromMap(String id, Map<String, dynamic> data) {
+    return ChatMessage(
+      id: id,
+      senderEmail: (data['senderEmail'] ?? '').toString(),
+      senderName: (data['senderName'] ?? '').toString(),
+      text: (data['text'] ?? '').toString(),
+      attachments: List<String>.from(data['attachments'] ?? []),
+      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      replyToId: (data['replyToId'] ?? '').toString(),
+      replyToText: (data['replyToText'] ?? '').toString(),
+      replyToSender: (data['replyToSender'] ?? '').toString(),
+      seenBy: List<String>.from(data['seenBy'] ?? []),
+      isRecalled: data['isRecalled'] == true,
+      isEdited: data['isEdited'] == true,
+      isPinned: data['isPinned'] == true,
+      reactions: Map<String, String>.from(data['reactions'] ?? {}),
+    );
+  }
+}
+
+class GroupComment {
+  final String id;
+  final String userId;
+  final String userEmail;
+  final String userName;
+  final String userAvatar;
+  final String text;
+  final List<String> attachments;
+  final Map<String, dynamic>? replyTo;
+  final DateTime? createdAt;
+  final List<String> seenBy;
+  final bool isRecalled;
+  final bool isEdited;
+  final bool isPinned;
+  final Map<String, String> reactions; // email -> emoji
+
+  GroupComment({
+    required this.id,
+    required this.userId,
+    required this.userEmail,
+    required this.userName,
+    required this.userAvatar,
+    required this.text,
+    this.attachments = const [],
+    this.replyTo,
+    this.createdAt,
+    this.seenBy = const [],
+    this.isRecalled = false,
+    this.isEdited = false,
+    this.isPinned = false,
+    this.reactions = const {},
+  });
+
+  factory GroupComment.fromMap(String id, Map<String, dynamic> data) {
+    return GroupComment(
+      id: id,
+      userId: (data['userId'] ?? '').toString(),
+      userEmail: (data['userEmail'] ?? '').toString(),
+      userName: (data['userName'] ?? '').toString(),
+      userAvatar: (data['userAvatar'] ?? '').toString(),
+      text: (data['text'] ?? '').toString(),
+      attachments: List<String>.from(data['attachments'] ?? []),
+      replyTo: data['replyTo'] as Map<String, dynamic>?,
+      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      seenBy: List<String>.from(data['seenBy'] ?? []),
+      isRecalled: data['isRecalled'] == true,
+      isEdited: data['isEdited'] == true,
+      isPinned: data['isPinned'] == true,
+      reactions: Map<String, String>.from(data['reactions'] ?? {}),
+    );
+  }
+}

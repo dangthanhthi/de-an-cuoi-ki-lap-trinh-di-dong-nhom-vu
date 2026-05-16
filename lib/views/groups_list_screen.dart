@@ -3,9 +3,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../widgets/ui_state_view.dart';
 import 'group_info_screen.dart';
 import 'group_notes_screen.dart';
-
 
 class GroupsListScreen extends StatefulWidget {
   const GroupsListScreen({super.key});
@@ -17,7 +17,6 @@ class GroupsListScreen extends StatefulWidget {
 class _GroupsListScreenState extends State<GroupsListScreen> {
   String _searchQuery = '';
   Stream<QuerySnapshot>? _groupsStream;
-
 
   DateTime _groupSortDate(Map<String, dynamic> group) {
     final updatedAt = group['updatedAt'];
@@ -46,7 +45,8 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (_) => GroupInfoScreen(groupId: groupId, initialName: groupName),
+        builder: (_) =>
+            GroupInfoScreen(groupId: groupId, initialName: groupName),
       ),
     );
   }
@@ -57,6 +57,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
     required bool isLeader,
     required bool isPinned,
   }) async {
+    final isMuted = await FirebaseService.isTargetMuted(type: 'group', targetId: groupId);
+    if (!mounted) return;
+
     await showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -82,6 +85,35 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                 await _toggleGroupPinAction(groupId, isPinned);
               },
             ),
+            ListTile(
+              leading: const Icon(Icons.notifications_paused_outlined),
+              title: const Text('Tắt thông báo 1 giờ'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await FirebaseService.muteTarget(type: 'group', targetId: groupId, duration: const Duration(hours: 1));
+                if (mounted) setState(() {});
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.notifications_off_outlined),
+              title: const Text('Tắt thông báo cho đến khi mở lại'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await FirebaseService.muteTarget(type: 'group', targetId: groupId, duration: const Duration(days: 36500));
+                if (mounted) setState(() {});
+              },
+            ),
+            if (isMuted)
+              ListTile(
+                leading: const Icon(Icons.volume_up_outlined),
+                title: const Text('Mở lại thông báo'),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  await FirebaseService.unmuteTarget(type: 'group', targetId: groupId);
+                  if (mounted) setState(() {});
+                },
+              ),
+            const Divider(),
             if (isLeader) ...[
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.red),
@@ -107,7 +139,6 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
     );
   }
 
-
   Future<void> _showCreateGroupDialog(BuildContext context) async {
     final nameCtrl = TextEditingController();
     await showDialog(
@@ -128,10 +159,10 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
             onPressed: () async {
               final name = nameCtrl.text.trim();
               if (name.isEmpty) return;
-              
+
               final scaffoldMsg = ScaffoldMessenger.of(context);
               Navigator.pop(ctx);
-              
+
               final result = await FirebaseService.createGroup(name);
               scaffoldMsg.showSnackBar(
                 SnackBar(
@@ -320,9 +351,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
           'Nhóm của tôi',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        actions: const [
-          SizedBox(width: 8),
-        ],
+        actions: const [SizedBox(width: 8)],
       ),
       body: Column(
         children: [
@@ -397,23 +426,35 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: _groupsStream ??= FirebaseService.getMyGroupsStream(),
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const UiStateView(
+                    icon: Icons.cloud_off_outlined,
+                    title: 'Không tải được danh sách nhóm',
+                    message: 'Kiểm tra kết nối hoặc thử đăng nhập lại.',
+                  );
+                }
+
                 if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const UiStateLoading(message: 'Đang tải nhóm...');
                 }
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  return UiStateView(
+                    icon: Icons.group_add_outlined,
+                    title: 'Bạn chưa tham gia nhóm nào',
+                    message: 'Tạo nhóm mới hoặc nhập mã để bắt đầu cộng tác.',
+                    action: Wrap(
+                      spacing: 10,
+                      alignment: WrapAlignment.center,
                       children: [
-                        Icon(
-                          Icons.group_off,
-                          size: 80,
-                          color: colorScheme.outlineVariant,
+                        FilledButton.icon(
+                          onPressed: () => _showCreateGroupDialog(context),
+                          icon: const Icon(Icons.group_add),
+                          label: const Text('Tạo nhóm'),
                         ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Bạn chưa tham gia nhóm nào',
-                          style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        OutlinedButton.icon(
+                          onPressed: () => _showJoinGroupDialog(context),
+                          icon: const Icon(Icons.login),
+                          label: const Text('Nhập mã'),
                         ),
                       ],
                     ),
@@ -421,50 +462,41 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                 }
 
                 final query = _searchQuery.toLowerCase().trim();
-                final safeEmail = AppState.currentUserEmail.toLowerCase().trim();
+                final safeEmail = AppState.currentUserEmail
+                    .toLowerCase()
+                    .trim();
                 final groups =
                     snapshot.data!.docs.where((doc) {
                       final group = doc.data() as Map<String, dynamic>;
-                      final name = (group['name'] ?? '').toString().toLowerCase();
+                      final name = (group['name'] ?? '')
+                          .toString()
+                          .toLowerCase();
                       final code = (group['groupCode'] ?? '')
                           .toString()
                           .toLowerCase();
                       return query.isEmpty ||
                           name.contains(query) ||
                           code.contains(query);
-                    }).toList()
-                      ..sort((a, b) {
-                        final groupA = a.data() as Map<String, dynamic>;
-                        final groupB = b.data() as Map<String, dynamic>;
-                        final pinnedA = List<String>.from(
-                          groupA['pinnedBy'] ?? const [],
-                        ).contains(safeEmail);
-                        final pinnedB = List<String>.from(
-                          groupB['pinnedBy'] ?? const [],
-                        ).contains(safeEmail);
-                        if (pinnedA != pinnedB) return pinnedA ? -1 : 1;
-                        return _groupSortDate(
-                          groupB,
-                        ).compareTo(_groupSortDate(groupA));
-                      });
+                    }).toList()..sort((a, b) {
+                      final groupA = a.data() as Map<String, dynamic>;
+                      final groupB = b.data() as Map<String, dynamic>;
+                      final pinnedA = List<String>.from(
+                        groupA['pinnedBy'] ?? const [],
+                      ).contains(safeEmail);
+                      final pinnedB = List<String>.from(
+                        groupB['pinnedBy'] ?? const [],
+                      ).contains(safeEmail);
+                      if (pinnedA != pinnedB) return pinnedA ? -1 : 1;
+                      return _groupSortDate(
+                        groupB,
+                      ).compareTo(_groupSortDate(groupA));
+                    });
 
                 if (groups.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.search_off,
-                          size: 64,
-                          color: colorScheme.outlineVariant,
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Không tìm thấy nhóm phù hợp',
-                          style: TextStyle(color: colorScheme.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
+                  return const UiStateView(
+                    icon: Icons.search_off_outlined,
+                    title: 'Không tìm thấy nhóm',
+                    message: 'Thử đổi từ khóa hoặc tìm bằng mã nhóm.',
                   );
                 }
 
@@ -478,14 +510,17 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                     final groupAvatar = (group['avatar'] ?? '').toString();
                     final leaderId = (group['leaderId'] ?? '').toString();
 
-                    final managerEmails = List<String>.from(group['managerEmails'] ?? const []);
+                    final managerEmails = List<String>.from(
+                      group['managerEmails'] ?? const [],
+                    ).map((item) => item.toLowerCase().trim()).toList();
                     final isManager = managerEmails.contains(safeEmail);
                     final isLeader = leaderId == FirebaseService.currentUid;
-                    final members = List<dynamic>.from(
-                      group['members'] ?? const [],
-                    );
-                    final groupCode =
-                        (group['groupCode'] ?? 'Chưa có mã').toString();
+                    final members = [
+                      ...List<String>.from(group['members'] ?? const []),
+                      ...List<String>.from(group['memberEmails'] ?? const []),
+                    ].map((item) => item.toLowerCase().trim()).toSet().toList();
+                    final groupCode = (group['groupCode'] ?? 'Chưa có mã')
+                        .toString();
 
                     final isPinned = List<String>.from(
                       group['pinnedBy'] ?? const [],
@@ -517,7 +552,12 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                               : const Stream.empty(),
                           builder: (context, snap) {
                             final reqs = (snap.data?.docs ?? [])
-                                .where((d) => (d.data() as Map<String, dynamic>)['groupId'] == groupId)
+                                .where(
+                                  (d) =>
+                                      (d.data()
+                                          as Map<String, dynamic>)['groupId'] ==
+                                      groupId,
+                                )
                                 .length;
                             return Badge(
                               isLabelVisible: reqs > 0,
@@ -547,51 +587,82 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const SizedBox(height: 6),
-                                StreamBuilder<List<Map<String, dynamic>>>(
-                                  stream: FirebaseService.getOnlineGroupMembersStream(groupId),
-                                  builder: (context, presenceSnap) {
-                                    final onlineCount = presenceSnap.data?.length ?? 0;
-                                    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-                                    final managerEmails = List<String>.from(group['managerEmails'] ?? []);
-                                    final isManager = managerEmails.contains(myEmail);
+                            StreamBuilder<List<Map<String, dynamic>>>(
+                              stream:
+                                  FirebaseService.getOnlineGroupMembersStream(
+                                    groupId,
+                                  ),
+                              builder: (context, presenceSnap) {
+                                final onlineCount =
+                                    presenceSnap.data?.length ?? 0;
+                                final myEmail = AppState.currentUserEmail
+                                    .toLowerCase()
+                                    .trim();
+                                final managerEmails =
+                                    List<String>.from(
+                                          group['managerEmails'] ?? const [],
+                                        )
+                                        .map(
+                                          (item) => item.toLowerCase().trim(),
+                                        )
+                                        .toList();
+                                final isManager = managerEmails.contains(
+                                  myEmail,
+                                );
 
-                                    return Wrap(
-                                      spacing: 8,
-                                      runSpacing: 8,
-                                      children: [
-                                        if (isLeader)
-                                          const _MetaBadge(
-                                            icon: Icons.key,
-                                            label: 'Trưởng nhóm',
-                                            color: Color(0xFFC58A00),
-                                          )
-                                        else if (isManager)
-                                          _MetaBadge(
-                                            icon: Icons.key_outlined,
-                                            label: 'Quản lý',
-                                            color: colorScheme.secondary,
-                                          )
-                                        else
-                                          _MetaBadge(
-                                            icon: Icons.person_outline,
-                                            label: 'Thành viên',
-                                            color: colorScheme.outline,
-                                          ),
-                                        _MetaBadge(
-                                          icon: Icons.people_outline,
-                                          label: '$onlineCount/${members.length} online',
-                                          color: onlineCount > 0 ? Colors.green : colorScheme.primary,
-                                        ),
-                                        if (isPinned)
-                                          _MetaBadge(
-                                            icon: Icons.push_pin,
-                                            label: 'Đã ghim',
-                                            color: colorScheme.primary,
-                                          ),
-                                      ],
-                                    );
-                                  },
-                                ),
+                                return Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    if (isLeader)
+                                      const _MetaBadge(
+                                        icon: Icons.key,
+                                        label: 'Trưởng nhóm',
+                                        color: Color(0xFFC58A00),
+                                      )
+                                    else if (isManager)
+                                      _MetaBadge(
+                                        icon: Icons.key_outlined,
+                                        label: 'Quản lý',
+                                        color: colorScheme.secondary,
+                                      )
+                                    else
+                                      _MetaBadge(
+                                        icon: Icons.person_outline,
+                                        label: 'Thành viên',
+                                        color: colorScheme.outline,
+                                      ),
+                                    _MetaBadge(
+                                      icon: Icons.people_outline,
+                                      label:
+                                          '$onlineCount/${members.length} online',
+                                      color: onlineCount > 0
+                                          ? Colors.green
+                                          : colorScheme.primary,
+                                    ),
+                                    if (isPinned)
+                                      _MetaBadge(
+                                        icon: Icons.push_pin,
+                                        label: 'Đã ghim',
+                                        color: colorScheme.primary,
+                                      ),
+                                    FutureBuilder<bool>(
+                                      future: FirebaseService.isTargetMuted(type: 'group', targetId: groupId),
+                                      builder: (context, muteSnap) {
+                                        if (muteSnap.data == true) {
+                                          return _MetaBadge(
+                                            icon: Icons.notifications_off_outlined,
+                                            label: 'Đã tắt thông báo',
+                                            color: colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+                                          );
+                                        }
+                                        return const SizedBox.shrink();
+                                      },
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
                             if (groupCode != 'Chưa có mã') ...[
                               const SizedBox(height: 6),
                               InkWell(
@@ -643,40 +714,14 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                               ),
                               const SizedBox(width: 4),
                             ],
-                            PopupMenuButton<String>(
-                              onSelected: (value) {
-                                if (value == 'info') {
-                                  _openGroupInfo(groupId, groupName);
-                                } else if (value == 'pin') {
-                                  _toggleGroupPinAction(groupId, isPinned);
-                                } else if (value == 'delete') {
-                                  _confirmDeleteGroup(context, groupId);
-                                } else if (value == 'leave') {
-                                  _confirmLeaveGroup(context, groupId);
-                                }
-                              },
-                              itemBuilder: (context) => [
-                                const PopupMenuItem(
-                                  value: 'info',
-                                  child: Text('Thông tin nhóm'),
-                                ),
-                                PopupMenuItem(
-                                  value: 'pin',
-                                  child: Text(
-                                    isPinned ? 'Bỏ ghim nhóm' : 'Ghim nhóm',
-                                  ),
-                                ),
-                                if (isLeader) ...const [
-                                  PopupMenuItem(
-                                    value: 'delete',
-                                    child: Text('Giải tán nhóm'),
-                                  ),
-                                ] else
-                                  const PopupMenuItem(
-                                    value: 'leave',
-                                    child: Text('Rời nhóm'),
-                                  ),
-                              ],
+                            IconButton(
+                              icon: const Icon(Icons.more_vert),
+                              onPressed: () => _showGroupQuickActions(
+                                groupId: groupId,
+                                groupName: groupName,
+                                isLeader: isLeader,
+                                isPinned: isPinned,
+                              ),
                             ),
                           ],
                         ),
@@ -699,7 +744,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                             );
                           } else if (result == 'left') {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Bạn đã rời khỏi nhóm')),
+                              const SnackBar(
+                                content: Text('Bạn đã rời khỏi nhóm'),
+                              ),
                             );
                           }
                         },
@@ -763,9 +810,3 @@ class _MetaBadge extends StatelessWidget {
     );
   }
 }
-
-
-
-
-
-

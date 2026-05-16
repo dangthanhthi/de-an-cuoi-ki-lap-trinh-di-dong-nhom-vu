@@ -12,6 +12,8 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import 'message_details_screen.dart';
+import 'components/message_context_menu.dart';
 
 class ChatScreen extends StatefulWidget {
   final String friendName;
@@ -45,12 +47,22 @@ class _ChatScreenState extends State<ChatScreen> {
   Map<String, dynamic>? _replyingTo;
   String? _editingMessageId;
   final ScrollController _scrollController = ScrollController();
+  final ExpansibleController _pinnedController = ExpansibleController();
 
   @override
   void initState() {
     super.initState();
     FirebaseService.markChatAsRead(widget.friendEmail);
     _loadChatMeta();
+  }
+
+  @override
+  void dispose() {
+    _pinnedController.dispose();
+    _speech.stop();
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadChatMeta() async {
@@ -65,16 +77,9 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  @override
-  void dispose() {
-    _speech.stop();
-    _messageController.dispose();
-    _scrollController.dispose();
-    super.dispose();
-  }
 
   void _showSnack(String message, {bool success = true}) {
-    if (!mounted) return;
+    if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -102,6 +107,28 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     return '${date.day}/${date.month} $timeStr';
+  }
+
+  String _formatSeparatorDate(Timestamp ts) {
+    final date = ts.toDate();
+    final now = DateTime.now();
+    final timeStr =
+        '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+
+    if (date.day == now.day &&
+        date.month == now.month &&
+        date.year == now.year) {
+      return '$timeStr Hôm nay';
+    }
+
+    final yesterday = now.subtract(const Duration(days: 1));
+    if (date.day == yesterday.day &&
+        date.month == yesterday.month &&
+        date.year == yesterday.year) {
+      return '$timeStr Hôm qua';
+    }
+
+    return '$timeStr ${date.day}/${date.month}/${date.year}';
   }
 
   String _getReplyDisplayText(Map<String, dynamic> data, List<QueryDocumentSnapshot> docs) {
@@ -152,8 +179,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scrollToMessage(String messageId, List<QueryDocumentSnapshot> docs) {
     final index = docs.indexWhere((doc) => doc.id == messageId);
     if (index != -1 && _scrollController.hasClients) {
+      final reverseIndex = docs.length - 1 - index;
       _scrollController.animateTo(
-        index * 100.0, // rough estimate
+        reverseIndex * 80.0, // rough estimate for reverse list
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
       );
@@ -161,204 +189,100 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showMessageDetails(Map<String, dynamic> data) {
-    final senderName = data['senderName'] ?? 'Người dùng';
-    final senderEmail = data['senderEmail'] ?? 'N/A';
-    final createdAt = data['createdAt'] as Timestamp?;
-    final isEdited = data['isEdited'] == true;
-    final seenBy = List<String>.from(data['seenBy'] ?? const []);
-
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Chi tiết tin nhắn',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-              ),
-              const SizedBox(height: 20),
-              _buildDetailItem(Icons.person_outline, 'Người gửi', '$senderName ($senderEmail)'),
-              _buildDetailItem(
-                Icons.access_time,
-                'Thời gian',
-                createdAt != null
-                    ? _formatMessageTime(createdAt)
-                    : 'Đang gửi...',
-              ),
-              if (isEdited) _buildDetailItem(Icons.edit_note, 'Trạng thái', 'Đã chỉnh sửa'),
-              if (seenBy.isNotEmpty)
-                _buildDetailItem(
-                  Icons.remove_red_eye_outlined,
-                  'Đã xem bởi',
-                  seenBy.contains(widget.friendEmail) ? widget.friendName : 'Chưa xem',
-                ),
-              const SizedBox(height: 10),
-            ],
-          ),
+    final seenBy = List<String>.from(data['seenBy'] ?? []);
+    final reactions = Map<String, String>.from(data['reactions'] ?? {});
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => MessageDetailsScreen(
+          messageText: (data['text'] ?? '').toString(),
+          createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+          seenBy: seenBy,
+          receivedBy: [widget.friendEmail],
+          memberInfoMap: {
+            widget.friendEmail: {'name': widget.friendName, 'avatar': widget.friendAvatar},
+            AppState.currentUserEmail: {'name': AppState.currentUserName, 'avatar': AppState.currentUserAvatar},
+          },
+          reactions: reactions,
         ),
       ),
     );
   }
 
-  Widget _buildDetailItem(IconData icon, String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              Text(value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 
   void _showMessageActions({
     required String messageId,
     required Map<String, dynamic> data,
     required bool isMe,
   }) {
-    final text = (data['text'] ?? '').toString().trim();
-    final hasText = text.isNotEmpty;
-
-    showModalBottomSheet(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.reply_outlined),
-              title: const Text('Trả lời'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                setState(() {
-                  _replyingTo = {
-                    'id': messageId,
-                    'text': text.isEmpty ? 'Hình ảnh/Tệp' : text,
-                    'senderName': (data['senderName'] ?? 'Người dùng').toString(),
-                  };
-                  _editingMessageId = null;
-                });
-              },
-            ),
-            if (hasText)
-              ListTile(
-                leading: const Icon(Icons.copy_all_outlined),
-                title: const Text('Sao chép tin nhắn'),
-                onTap: () => _copyMessageText(text),
-              ),
-            if (isMe && hasText)
-              ListTile(
-                leading: const Icon(Icons.edit_outlined),
-                title: const Text('Sửa tin nhắn'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  setState(() {
-                    _editingMessageId = messageId;
-                    _messageController.text = text;
-                    _replyingTo = null;
-                  });
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('Xem chi tiết tin nhắn'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _showMessageDetails(data);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Xóa ở phía tôi'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                await FirebaseService.deleteMessage(
-                  widget.friendEmail,
-                  messageId,
-                  deleteForEveryone: false,
-                );
-                if (mounted) _showSnack('Đã ẩn tin nhắn ở phía bạn');
-              },
-            ),
-            if (isMe)
-              ListTile(
-                leading: const Icon(Icons.undo_outlined, color: Colors.red),
-                title: const Text('Thu hồi tin nhắn'),
-                textColor: Colors.red,
-                onTap: () async {
-                  final shouldRecall = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Thu hồi tin nhắn?'),
-                      content: const Text('Tin nhắn này sẽ bị xóa đối với tất cả mọi người.'),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('Hủy'),
-                        ),
-                        FilledButton(
-                          onPressed: () => Navigator.pop(ctx, true),
-                          style: FilledButton.styleFrom(backgroundColor: Colors.red),
-                          child: const Text('Thu hồi'),
-                        ),
-                      ],
-                    ),
-                  );
-                  if (shouldRecall != true || !mounted) return;
-
-                  if (sheetContext.mounted) {
-                    Navigator.pop(sheetContext);
-                  }
-                  
-                  final res = await FirebaseService.deleteMessage(
-                    widget.friendEmail,
-                    messageId,
-                    deleteForEveryone: true,
-                  );
-                  if (mounted) {
-                    _showSnack(
-                      res == 'SUCCESS' ? 'Đã thu hồi tin nhắn' : res,
-                      success: res == 'SUCCESS',
-                    );
-                  }
-                },
-              ),
-            const Divider(height: 1),
-            ListTile(
-              leading: Icon(
-                data['isPinned'] == true ? Icons.push_pin : Icons.push_pin_outlined,
-              ),
-              title: Text(data['isPinned'] == true ? 'Bỏ ghim' : 'Ghim tin nhắn'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pinMessage(
-                  messageId,
-                  text,
-                  (data['senderName'] ?? 'Người dùng').toString(),
-                  isCurrentlyPinned: data['isPinned'] == true,
-                );
-              },
-            ),
-          ],
-        ),
+    MessageContextMenu.show(
+      context,
+      isMe: isMe,
+      isRecalled: data['isRecalled'] == true,
+      isPinned: data['isPinned'] == true,
+      messageText: (data['text'] ?? '').toString(),
+      onReact: (emoji) {
+        ChatService.toggleMessageReaction(widget.friendEmail, messageId, emoji);
+      },
+      onReply: () {
+        setState(() {
+          _replyingTo = {
+            'id': messageId,
+            'text': (data['text'] ?? '').toString().isEmpty ? 'Hình ảnh/Tệp' : data['text'],
+            'senderName': (data['senderName'] ?? 'Người dùng').toString(),
+          };
+          _editingMessageId = null;
+        });
+      },
+      onCopy: () => _copyMessageText((data['text'] ?? '').toString()),
+      onPin: () => _pinMessage(
+        messageId,
+        (data['text'] ?? '').toString(),
+        (data['senderName'] ?? 'Người dùng').toString(),
+        isCurrentlyPinned: data['isPinned'] == true,
       ),
+      onShowDetails: () => _showMessageDetails(data),
+      onDeleteForMe: () async {
+        await FirebaseService.deleteMessage(
+          widget.friendEmail,
+          messageId,
+          deleteForEveryone: false,
+        );
+        if (mounted) _showSnack('Đã ẩn tin nhắn ở phía bạn');
+      },
+      onRecall: isMe ? () async {
+        final shouldRecall = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Thu hồi tin nhắn?'),
+            content: const Text('Tin nhắn này sẽ bị xóa đối với tất cả mọi người.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Hủy'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text('Thu hồi'),
+              ),
+            ],
+          ),
+        );
+        if (shouldRecall == true) {
+          final res = await FirebaseService.deleteMessage(
+            widget.friendEmail,
+            messageId,
+            deleteForEveryone: true,
+          );
+          if (mounted) {
+            _showSnack(
+              res == 'SUCCESS' ? 'Đã thu hồi tin nhắn' : res,
+              success: res == 'SUCCESS',
+            );
+          }
+        }
+      } : null,
     );
   }
 
@@ -368,38 +292,44 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
 
-    setState(() => _isSending = true);
+    // Capture state in case we need to handle errors
+    final currentAttachments = List<String>.from(_attachments);
+    final currentReply = _replyingTo;
+    final currentEditId = _editingMessageId;
 
-    String result;
-    if (_editingMessageId != null) {
-      result = await FirebaseService.editMessage(
-        widget.friendEmail,
-        _editingMessageId!,
-        text,
-      );
-    } else {
-      result = await FirebaseService.sendMessage(
-        widget.friendEmail,
-        text,
-        attachments: _attachments,
-        replyToData: _replyingTo,
-      );
-    }
+    // OPTIMISTIC UPDATE: Clear UI immediately
+    _messageController.clear();
+    setState(() {
+      _attachments = [];
+      _replyingTo = null;
+      _editingMessageId = null;
+      _isSending = false;
+      _liveSpeechText = '';
+      _lastInsertedSpeech = '';
+    });
 
-    if (!mounted) return;
-    setState(() => _isSending = false);
+    try {
+      String result;
+      if (currentEditId != null) {
+        result = await FirebaseService.editMessage(
+          widget.friendEmail,
+          currentEditId,
+          text,
+        );
+      } else {
+        result = await FirebaseService.sendMessage(
+          widget.friendEmail,
+          text,
+          attachments: currentAttachments,
+          replyToData: currentReply,
+        );
+      }
 
-    if (result == 'SUCCESS') {
-      _messageController.clear();
-      setState(() {
-        _attachments = [];
-        _replyingTo = null;
-        _editingMessageId = null;
-        _liveSpeechText = '';
-        _lastInsertedSpeech = '';
-      });
-    } else {
-      _showSnack(result, success: false);
+      if (result != 'SUCCESS' && mounted) {
+        _showSnack(result, success: false);
+      }
+    } catch (e) {
+      if (mounted) _showSnack('Lỗi gửi tin nhắn: $e', success: false);
     }
   }
 
@@ -480,7 +410,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final contactDocId = await FirebaseService.getContactDocIdByEmail(
       widget.friendEmail,
     );
-    if (contactDocId == null) {
+    if (contactDocId.isEmpty) {
       _showSnack('Không tìm thấy thông tin liên hệ để đổi tên', success: false);
       return;
     }
@@ -1079,22 +1009,39 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     }
 
-    final image = await _imagePicker.pickImage(
-      source: source,
-      imageQuality: 40,
-      maxWidth: 500,
-    );
-    if (image == null) return;
+    if (source == ImageSource.gallery) {
+      final images = await _imagePicker.pickMultiImage(
+        imageQuality: 40,
+        maxWidth: 500,
+      );
+      if (images.isNotEmpty) {
+        for (final img in images) {
+          final file = File(img.path);
+          final fileSize = await file.length();
+          if (fileSize <= FirebaseService.maxAttachmentBytes) {
+            final fileName = img.name.isNotEmpty ? img.name : 'image.jpg';
+            _uploadAttachmentFile(file, fileName, fileSize);
+          }
+        }
+      }
+    } else {
+      final image = await _imagePicker.pickImage(
+        source: source,
+        imageQuality: 40,
+        maxWidth: 500,
+      );
+      if (image == null) return;
 
-    final file = File(image.path);
-    final fileSize = await file.length();
-    if (fileSize > FirebaseService.maxAttachmentBytes) {
-      _showSnack('Ảnh quá lớn (>30MB).', success: false);
-      return;
+      final file = File(image.path);
+      final fileSize = await file.length();
+      if (fileSize > FirebaseService.maxAttachmentBytes) {
+        _showSnack('Ảnh quá lớn (>30MB).', success: false);
+        return;
+      }
+
+      final fileName = image.name.isNotEmpty ? image.name : 'image.jpg';
+      await _uploadAttachmentFile(file, fileName, fileSize);
     }
-
-    final fileName = image.name.isNotEmpty ? image.name : 'image.jpg';
-    await _uploadAttachmentFile(file, fileName, fileSize);
   }
 
   Future<void> _pickFileAttachment() async {
@@ -1102,25 +1049,18 @@ class _ChatScreenState extends State<ChatScreen> {
     if (Platform.isAndroid) {
       await Permission.storage.request();
     }
-    final result = await FilePicker.pickFiles(withData: false);
-    if (result == null || result.files.isEmpty) return;
-    final file = result.files.first;
-    final path = file.path;
-    if (path == null || path.isEmpty) {
-      _showSnack('Không đọc được đường dẫn tệp.', success: false);
-      return;
+    final result = await FilePicker.pickFiles(withData: false, allowMultiple: true);
+    if (result != null && result.files.isNotEmpty) {
+      for (final pickedFile in result.files) {
+        if (pickedFile.path != null) {
+          final file = File(pickedFile.path!);
+          final fileSize = pickedFile.size > 0 ? pickedFile.size : await file.length();
+          if (fileSize <= FirebaseService.maxAttachmentBytes) {
+            _uploadAttachmentFile(file, pickedFile.name, fileSize);
+          }
+        }
+      }
     }
-    final selectedFile = File(path);
-    if (!await selectedFile.exists()) {
-      _showSnack('Tệp không tồn tại.', success: false);
-      return;
-    }
-    final size = file.size > 0 ? file.size : await selectedFile.length();
-    if (size > FirebaseService.maxAttachmentBytes) {
-      _showSnack('Tệp vượt quá 30MB.', success: false);
-      return;
-    }
-    await _uploadAttachmentFile(selectedFile, file.name, size);
   }
 
   Future<void> _uploadAttachmentFile(
@@ -1173,22 +1113,26 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showImagePreview(String value, int index) {
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        clipBehavior: Clip.antiAlias,
+      builder: (ctx) => Dialog.fullscreen(
+        backgroundColor: Colors.black,
         child: Stack(
           children: [
-            InteractiveViewer(
-              child: AspectRatio(
-                aspectRatio: 1,
-                child: _AttachmentImage(value: value, fit: BoxFit.contain),
+            Center(
+              child: InteractiveViewer(
+                minScale: 0.5,
+                maxScale: 4.0,
+                child: _AttachmentImage(
+                  value: value,
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
             Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton.filledTonal(
+              top: 40,
+              right: 20,
+              child: IconButton(
                 onPressed: () => Navigator.pop(ctx),
-                icon: const Icon(Icons.close),
+                icon: const Icon(Icons.close, color: Colors.white, size: 30),
               ),
             ),
           ],
@@ -1225,22 +1169,24 @@ class _ChatScreenState extends State<ChatScreen> {
     ColorScheme colorScheme,
   ) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
         for (var i = 0; i < attachments.length; i++) ...[
           if (isImageValue(attachments[i]))
             GestureDetector(
               onTap: () => _showImagePreview(attachments[i], i),
               child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                constraints: const BoxConstraints(maxHeight: 220, minWidth: 140),
+                margin: const EdgeInsets.only(bottom: 4),
+                constraints: BoxConstraints(
+                  maxHeight: 300,
+                  maxWidth: MediaQuery.of(context).size.width * 0.75,
+                ),
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
+                  borderRadius: BorderRadius.circular(18),
                   border: Border.all(
-                    color: isMe
-                        ? colorScheme.onPrimary.withValues(alpha: 0.18)
-                        : colorScheme.outlineVariant,
+                    color: Colors.black.withValues(alpha: 0.05),
+                    width: 0.5,
                   ),
                 ),
                 child: _AttachmentImage(value: attachments[i]),
@@ -1367,6 +1313,40 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  Future<void> _showUnpinDialog(String messageId) async {
+    final chatId = FirebaseService.chatIdForEmails(
+      AppState.currentUserEmail,
+      widget.friendEmail,
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Gỡ ghim tin nhắn?'),
+        content: const Text('Bạn có chắc chắn muốn gỡ ghim tin nhắn này không?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Hủy'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await FirebaseFirestore.instance
+                  .collection('chats')
+                  .doc(chatId)
+                  .collection('messages')
+                  .doc(messageId)
+                  .update({'isPinned': false});
+              _showSnack('Đã gỡ ghim tin nhắn', success: true);
+            },
+            child: const Text('Gỡ ghim', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPinnedMessagesBar(List<QueryDocumentSnapshot> allMessages) {
     final chatId = FirebaseService.chatIdForEmails(
       AppState.currentUserEmail,
@@ -1387,6 +1367,7 @@ class _ChatScreenState extends State<ChatScreen> {
           width: double.infinity,
           color: colorScheme.surfaceContainerLow,
           child: ExpansionTile(
+            controller: _pinnedController,
             shape: const Border(),
             leading: Icon(Icons.push_pin, size: 20, color: colorScheme.primary),
             title: Text(
@@ -1395,10 +1376,27 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             children: docs.map((doc) {
               final data = doc.data() as Map<String, dynamic>;
+              final text = (data['text'] ?? '').toString();
+              final attachments = List<String>.from(data['attachments'] ?? []);
+              
+              String displayText = text;
+              if (text.isEmpty && attachments.isNotEmpty) {
+                final firstUrl = attachments.first.toLowerCase();
+                if (firstUrl.contains('.jpg') || 
+                    firstUrl.contains('.jpeg') || 
+                    firstUrl.contains('.png') || 
+                    firstUrl.contains('.gif') || 
+                    firstUrl.contains('.webp')) {
+                  displayText = 'Đã ghim 1 ảnh';
+                } else {
+                  displayText = 'Đã ghim 1 file';
+                }
+              }
+
               return ListTile(
                 dense: true,
                 title: Text(
-                  data['text'] ?? 'Hình ảnh/Tệp',
+                  displayText.isEmpty ? 'Hình ảnh/Tệp' : displayText,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontSize: 13),
@@ -1408,7 +1406,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   style: const TextStyle(fontSize: 11),
                 ),
                 trailing: const Icon(Icons.chevron_right, size: 16),
-                onTap: () => _scrollToMessage(doc.id, allMessages),
+                onTap: () {
+                  _pinnedController.collapse();
+                  _scrollToMessage(doc.id, allMessages);
+                },
+                onLongPress: () => _showUnpinDialog(doc.id),
               );
             }).toList(),
           ),
@@ -1421,6 +1423,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return Scaffold(
       appBar: AppBar(
@@ -1550,166 +1553,302 @@ class _ChatScreenState extends State<ChatScreen> {
                             FirebaseService.markMessageAsSeen(chatId, doc.id);
                           }
 
-                          return Align(
-                            alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onLongPress: () {
-                                HapticFeedback.heavyImpact();
-                                _showMessageActions(
-                                  messageId: doc.id,
-                                  data: data,
-                                  isMe: isMe,
-                                );
-                              },
-                              child: Container(
-                                constraints: BoxConstraints(
-                                  maxWidth: MediaQuery.of(context).size.width * 0.78,
+                          final reactions = Map<String, String>.from(data['reactions'] ?? {});
+
+                          final currentTimestamp = data['createdAt'] as Timestamp?;
+                          bool showDateSeparator = false;
+                          if (currentTimestamp != null) {
+                            if (index == docs.length - 1) {
+                              showDateSeparator = true;
+                            } else {
+                              final olderDoc = docs[index + 1];
+                              final olderData =
+                                  olderDoc.data() as Map<String, dynamic>;
+                              final olderTimestamp =
+                                  olderData['createdAt'] as Timestamp?;
+                              if (olderTimestamp != null) {
+                                final diff = currentTimestamp
+                                    .toDate()
+                                    .difference(olderTimestamp.toDate());
+                                if (diff.inMinutes >= 30) {
+                                  showDateSeparator = true;
+                                }
+                              }
+                            }
+                          }
+
+                          return Column(
+                            children: [
+                              if (showDateSeparator && currentTimestamp != null)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 24,
+                                  ),
+                                  child: Text(
+                                    _formatSeparatorDate(currentTimestamp),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: colorScheme.onSurfaceVariant
+                                          .withValues(alpha: 0.7),
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
                                 ),
-                                margin: const EdgeInsets.only(bottom: 8),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: isRecalled
-                                      ? (isMe
-                                          ? colorScheme.primary.withValues(alpha: 0.1)
-                                          : colorScheme.surfaceContainerHighest.withValues(alpha: 0.5))
-                                      : (isMe
-                                          ? colorScheme.primary
-                                          : colorScheme.surfaceContainerHighest),
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: isRecalled
-                                      ? Border.all(
-                                          color: isMe
-                                              ? colorScheme.primary.withValues(alpha: 0.2)
-                                              : colorScheme.outlineVariant,
-                                        )
-                                      : null,
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
+                              Align(
+                                alignment: isMe
+                                    ? Alignment.centerRight
+                                    : Alignment.centerLeft,
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
                                   children: [
-                                    if (data['isPinned'] == true)
+                                    if (!isMe)
                                       Padding(
-                                        padding: const EdgeInsets.only(bottom: 6),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(Icons.push_pin, size: 12, color: Colors.amber),
-                                            const SizedBox(width: 4),
-                                            Text(
-                                              'Đã ghim',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                color: isMe ? Colors.amber.shade100 : Colors.amber.shade800,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ],
+                                        padding: const EdgeInsets.only(right: 8, bottom: 12),
+                                        child: CircleAvatar(
+                                          radius: 14,
+                                          backgroundImage: avatarImageProvider(
+                                            widget.friendAvatar,
+                                            name: widget.friendName,
+                                          ),
                                         ),
                                       ),
-                                    if (!isRecalled &&
-                                        data['replyToId'] != null &&
-                                        (data['replyToId'] as String).isNotEmpty)
-                                      InkWell(
-                                        onTap: () => _scrollToMessage(data['replyToId'], docs),
-                                        borderRadius: BorderRadius.circular(8),
+                                    Stack(
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onLongPress: () {
+                                            HapticFeedback.heavyImpact();
+                                            _showMessageActions(
+                                              messageId: doc.id,
+                                              data: data,
+                                              isMe: isMe,
+                                            );
+                                          },
+                                          child: Container(
+                                            constraints: BoxConstraints(
+                                              maxWidth: MediaQuery.of(context).size.width * 
+                                                  (isMe ? 0.78 : 0.72),
+                                            ),
+                                            margin: const EdgeInsets.only(bottom: 12),
+                                            padding: (text.trim().isEmpty && attachments.isNotEmpty && attachments.every((a) => isImageValue(a)))
+                                                ? EdgeInsets.zero
+                                                : const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                                            decoration: BoxDecoration(
+                                              color: (text.trim().isEmpty && attachments.isNotEmpty && attachments.every((a) => isImageValue(a)))
+                                                  ? Colors.transparent
+                                                  : (isRecalled
+                                                      ? (isMe
+                                                          ? colorScheme.primary.withValues(alpha: 0.1)
+                                                          : colorScheme.surfaceContainerHighest.withValues(alpha: 0.5))
+                                                      : (isMe
+                                                          ? colorScheme.primary
+                                                          : colorScheme.surfaceContainerHighest)),
+                                              borderRadius: BorderRadius.circular(24),
+                                              boxShadow: [
+                                                if (!isRecalled && !(text.trim().isEmpty && attachments.isNotEmpty && attachments.every((a) => isImageValue(a))))
+                                                  BoxShadow(
+                                                    color: Colors.black.withValues(alpha: isDark ? 0.2 : 0.05),
+                                                    blurRadius: 4,
+                                                    offset: const Offset(0, 2),
+                                                  ),
+                                              ],
+                                            ),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            if (data['isPinned'] == true)
+                                              Padding(
+                                                padding: const EdgeInsets.only(bottom: 6),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(Icons.push_pin, size: 12, color: Colors.amber),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'Đã ghim',
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: isMe ? Colors.amber.shade100 : Colors.amber.shade800,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            if (!isRecalled &&
+                                                data['replyToId'] != null &&
+                                                (data['replyToId'] as String).isNotEmpty)
+                                              InkWell(
+                                                onTap: () => _scrollToMessage(data['replyToId'], docs),
+                                                borderRadius: BorderRadius.circular(8),
+                                                child: Container(
+                                                  margin: const EdgeInsets.only(bottom: 6),
+                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                  decoration: BoxDecoration(
+                                                    color: isMe
+                                                        ? colorScheme.onPrimary.withValues(alpha: 0.16)
+                                                        : colorScheme.primary.withValues(alpha: 0.1),
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        (data['replyToSender'] ?? 'Người dùng').toString(),
+                                                        style: TextStyle(
+                                                          fontSize: 11,
+                                                          fontWeight: FontWeight.bold,
+                                                          color: isMe ? colorScheme.onPrimary : colorScheme.primary,
+                                                        ),
+                                                      ),
+                                                      Text(
+                                                        _getReplyDisplayText(data, docs),
+                                                        maxLines: 2,
+                                                        overflow: TextOverflow.ellipsis,
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: isMe
+                                                              ? colorScheme.onPrimary.withValues(alpha: 0.8)
+                                                              : colorScheme.onSurfaceVariant,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ),
+                                            if (!isRecalled && attachments.isNotEmpty)
+                                              _buildMessageAttachments(attachments, isMe, colorScheme),
+                                            Text(
+                                              text,
+                                              style: TextStyle(
+                                                color: isRecalled
+                                                    ? (isMe ? colorScheme.primary : colorScheme.onSurfaceVariant)
+                                                    : (isMe ? colorScheme.onPrimary : null),
+                                                fontStyle: isRecalled ? FontStyle.italic : null,
+                                                fontSize: isRecalled ? 13 : null,
+                                              ),
+                                            ),
+                                            Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              mainAxisAlignment: MainAxisAlignment.end,
+                                              children: [
+                                                if (data['isEdited'] == true)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(right: 4, top: 4),
+                                                    child: Text(
+                                                      '(Đã chỉnh sửa)',
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        fontStyle: FontStyle.italic,
+                                                        color: isMe
+                                                            ? Colors.white70
+                                                            : colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                if (timeLabel.isNotEmpty)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(top: 4),
+                                                    child: Text(
+                                                      timeLabel,
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        fontWeight: FontWeight.w400,
+                                                        color: isMe
+                                                            ? Colors.white60
+                                                            : colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                           ],
+                                         ),
+                                       ),
+                                     ),
+                                    if (reactions.isNotEmpty)
+                                      Positioned(
+                                        bottom: 0,
+                                        right: isMe ? 8 : null,
+                                        left: isMe ? null : 8,
                                         child: Container(
-                                          margin: const EdgeInsets.only(bottom: 6),
-                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                           decoration: BoxDecoration(
-                                            color: isMe
-                                                ? colorScheme.onPrimary.withValues(alpha: 0.16)
-                                                : colorScheme.primary.withValues(alpha: 0.1),
-                                            borderRadius: BorderRadius.circular(8),
+                                            color: colorScheme.surface,
+                                            borderRadius: BorderRadius.circular(12),
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: Colors.black.withValues(alpha: 0.1),
+                                                blurRadius: 4,
+                                                offset: const Offset(0, 2),
+                                              ),
+                                            ],
+                                            border: Border.all(color: colorScheme.outlineVariant, width: 0.5),
                                           ),
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
                                             children: [
                                               Text(
-                                                (data['replyToSender'] ?? 'Người dùng').toString(),
-                                                style: TextStyle(
-                                                  fontSize: 11,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: isMe ? colorScheme.onPrimary : colorScheme.primary,
-                                                ),
+                                                reactions.values.toSet().join(''),
+                                                style: const TextStyle(fontSize: 12),
                                               ),
-                                              Text(
-                                                _getReplyDisplayText(data, docs),
-                                                maxLines: 2,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: isMe
-                                                      ? colorScheme.onPrimary.withValues(alpha: 0.8)
-                                                      : colorScheme.onSurfaceVariant,
+                                              if (reactions.length > 1) ...[
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  '${reactions.length}',
+                                                  style: TextStyle(
+                                                    fontSize: 10,
+                                                    fontWeight: FontWeight.bold,
+                                                    color: colorScheme.primary,
+                                                  ),
                                                 ),
-                                              ),
+                                              ],
                                             ],
                                           ),
                                         ),
-                                      ),
-                                    if (!isRecalled && attachments.isNotEmpty)
-                                      _buildMessageAttachments(attachments, isMe, colorScheme),
-                                    Text(
-                                      text,
-                                      style: TextStyle(
-                                        color: isRecalled
-                                            ? (isMe ? colorScheme.primary : colorScheme.onSurfaceVariant)
-                                            : (isMe ? colorScheme.onPrimary : null),
-                                        fontStyle: isRecalled ? FontStyle.italic : null,
-                                        fontSize: isRecalled ? 13 : null,
-                                      ),
                                     ),
-                                    Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      mainAxisAlignment: MainAxisAlignment.end,
-                                      children: [
-                                        if (data['isEdited'] == true)
-                                          Padding(
-                                            padding: const EdgeInsets.only(right: 4, top: 6),
-                                            child: Text(
-                                              '(Đã chỉnh sửa)',
-                                              style: TextStyle(
-                                                fontSize: 10,
-                                                fontStyle: FontStyle.italic,
-                                                color: isMe
-                                                    ? colorScheme.onPrimary.withValues(alpha: 0.6)
-                                                    : colorScheme.onSurfaceVariant,
-                                              ),
-                                            ),
-                                          ),
-                                        if (timeLabel.isNotEmpty)
-                                          Padding(
-                                            padding: const EdgeInsets.only(top: 6),
-                                            child: Text(
-                                              timeLabel,
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: isMe
-                                                    ? colorScheme.onPrimary.withValues(alpha: 0.74)
-                                                    : colorScheme.onSurfaceVariant,
-                                              ),
-                                            ),
-                                          ),
-                                        if (isMe && seenBy.contains(widget.friendEmail))
-                                          const Padding(
-                                            padding: EdgeInsets.only(left: 6, top: 6),
-                                            child: Text(
-                                              '• Đã xem',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.white70,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
-                                      ],
-                                    ),
-                                  ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            ),
-                          );
+                                if (isMe &&
+                                    index == 0 &&
+                                    seenBy.contains(widget.friendEmail))
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(
+                                          top: 4, right: 4),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                            'Đã xem',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: colorScheme
+                                                  .onSurfaceVariant,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          CircleAvatar(
+                                            radius: 7,
+                                            backgroundImage:
+                                                avatarImageProvider(
+                                              widget.friendAvatar,
+                                              name: widget.friendName,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            );
                         },
                       ),
               ),

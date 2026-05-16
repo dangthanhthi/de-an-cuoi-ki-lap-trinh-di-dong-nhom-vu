@@ -151,10 +151,7 @@ class AIService {
       r'(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})|(\d{1,2})\s+tháng\s+(\d{1,2})(\s+năm\s+(\d{4}))?',
       caseSensitive: false,
     );
-    final timeRegex = RegExp(
-      r'(\d{1,2})[h:](\d{2})',
-      caseSensitive: false,
-    );
+    final timeRegex = RegExp(r'(\d{1,2})[h:](\d{2})', caseSensitive: false);
 
     final dateMatch = dateRegex.firstMatch(combined);
     final timeMatch = timeRegex.firstMatch(combined);
@@ -198,11 +195,7 @@ class AIService {
       } catch (_) {}
     }
 
-    return {
-      'label': label,
-      'priority': priority,
-      'reminder': reminder,
-    };
+    return {'label': label, 'priority': priority, 'reminder': reminder};
   }
 
   static const int _maxHistoryMessages = 20;
@@ -233,7 +226,6 @@ class AIService {
 
   static String get _studyLabel =>
       AppState.labels.length > 2 ? AppState.labels[2] : 'Học tập';
-
 
   static Future<String> createSession({
     String? noteId,
@@ -1504,5 +1496,3 @@ class _TravelInfo {
 
   const _TravelInfo({this.destination, this.duration, this.timing});
 }
-
-

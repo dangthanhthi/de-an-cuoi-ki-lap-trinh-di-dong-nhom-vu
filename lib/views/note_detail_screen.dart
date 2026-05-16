@@ -15,6 +15,7 @@ import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
 import 'create_edit_note_screen.dart';
 import '../utils/note_utils.dart';
+import '../widgets/success_animation.dart';
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
@@ -432,7 +433,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     final mutedText = colorScheme.onSurfaceVariant;
 
     return Scaffold(
-      backgroundColor: colorScheme.surface,
+        backgroundColor: colorScheme.surface,
       body: CustomScrollView(
         slivers: [
           SliverAppBar(
@@ -647,32 +648,32 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         ),
                     ],
                   ),
-                  const Divider(height: 40),
 
-                  // Hiển thị nhắc nhở nếu có.
-                  if (widget.note.hasReminder &&
-                      widget.note.reminderTime != null)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 16),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer.withValues(alpha: isDark ? 0.55 : 1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.alarm, color: colorScheme.primary),
-                          const SizedBox(width: 8),
-                          Text(
-                            'Đã hẹn giờ: ${widget.note.reminderTime!.hour.toString().padLeft(2, '0')}:${widget.note.reminderTime!.minute.toString().padLeft(2, '0')} - ${widget.note.reminderTime!.day}/${widget.note.reminderTime!.month}',
-                            style: TextStyle(
-                              color: colorScheme.onPrimaryContainer,
-                              fontWeight: FontWeight.bold,
-                            ),
+                  if (widget.note.isTodo && widget.note.todos.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: AnimatedProgressBar(
+                            value: widget.note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / widget.note.todos.length,
+                            backgroundColor: colorScheme.surfaceContainerHighest,
+                            color: activeColor,
+                            height: 10,
                           ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          '${(widget.note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / widget.note.todos.length * 100).toInt()}%',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: activeColor,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
                     ),
+                  ],
+                  const Divider(height: 40),
 
                   // Hiển thị file đính kèm nếu có.
                   if (widget.note.attachments.isNotEmpty) ...[
@@ -778,6 +779,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                                     clearCompletedAt:
                                         nextStatus != TodoStatus.done,
                                   );
+
+                                  if (nextStatus == TodoStatus.done) {
+                                    HapticFeedback.lightImpact();
+                                  }
                                 });
                               }
                             : () {

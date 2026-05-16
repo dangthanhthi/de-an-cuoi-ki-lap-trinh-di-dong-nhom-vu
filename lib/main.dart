@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -9,6 +10,8 @@ import 'views/intro_screen.dart';
 import 'controllers/app_state.dart';
 import 'controllers/notification_service.dart';
 import 'controllers/local_service.dart';
+import 'controllers/note_provider.dart';
+import 'package:provider/provider.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 Future<void> _ensureFirebaseInitialized() async {
@@ -34,7 +37,14 @@ void main() async {
   await AppState.loadLocalSettings();
   // We will request permissions in IntroScreen/LoginScreen for better UX
 
-  runApp(const SNoteApp());
+  runApp(
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => NoteProvider()),
+      ],
+      child: const SNoteApp(),
+    ),
+  );
 }
 
 class SNoteApp extends StatelessWidget {
@@ -86,16 +96,16 @@ class SNoteApp extends StatelessWidget {
         );
 
     return ThemeData(
-      brightness: brightness,
-      colorScheme: scheme,
       useMaterial3: true,
-      scaffoldBackgroundColor: scheme.surface,
-      textTheme: ThemeData(brightness: brightness).textTheme.apply(
+      colorScheme: scheme,
+      brightness: brightness,
+      textTheme: GoogleFonts.outfitTextTheme().apply(
         bodyColor: scheme.onSurface,
         displayColor: scheme.onSurface,
       ),
+      scaffoldBackgroundColor: isDark ? const Color(0xFF0A0C10) : const Color(0xFFF8FAFC),
       appBarTheme: AppBarTheme(
-        backgroundColor: scheme.surface,
+        backgroundColor: isDark ? const Color(0xFF0A0C10) : const Color(0xFFF8FAFC),
         foregroundColor: scheme.onSurface,
         elevation: 0,
         centerTitle: false,
@@ -103,62 +113,38 @@ class SNoteApp extends StatelessWidget {
       ),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: scheme.surfaceContainerLow,
+        color: isDark ? const Color(0xFF161B22) : Colors.white,
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: isDark ? const Color(0xFF30363D) : scheme.outlineVariant.withValues(alpha: 0.5),
+            width: 1,
+          ),
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: scheme.surfaceContainerHighest.withValues(alpha: isDark ? 0.48 : 1),
+        fillColor: isDark ? const Color(0xFF0D1117) : scheme.surfaceContainerHighest.withValues(alpha: 0.3),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: isDark ? const Color(0xFF30363D) : scheme.outlineVariant),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: isDark ? const Color(0xFF30363D) : scheme.outlineVariant),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: scheme.primary, width: 1.4),
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(color: scheme.primary, width: 1.5),
         ),
-        labelStyle: TextStyle(color: scheme.onSurfaceVariant),
-        hintStyle: TextStyle(color: scheme.onSurfaceVariant),
       ),
-      chipTheme: ChipThemeData(
-        backgroundColor: scheme.surfaceContainerHigh,
-        selectedColor: scheme.primaryContainer,
-        labelStyle: TextStyle(color: scheme.onSurface),
-        secondaryLabelStyle: TextStyle(color: scheme.onPrimaryContainer),
-        side: BorderSide(color: scheme.outlineVariant),
-      ),
-      dividerTheme: DividerThemeData(color: scheme.outlineVariant),
-      bottomNavigationBarTheme: BottomNavigationBarThemeData(
-        backgroundColor: scheme.surface,
-        selectedItemColor: scheme.primary,
-        unselectedItemColor: scheme.onSurfaceVariant,
-      ),
-      navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: scheme.surface,
-        indicatorColor: scheme.primaryContainer,
-        labelTextStyle: WidgetStatePropertyAll(
-          TextStyle(color: scheme.onSurface, fontSize: 12),
-        ),
+      dividerTheme: DividerThemeData(
+        color: isDark ? const Color(0xFF30363D) : scheme.outlineVariant,
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: isDark
-            ? const Color(0xFF303842)
-            : const Color(0xFF32363D),
-        contentTextStyle: const TextStyle(color: Colors.white),
-      ),
-      bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: scheme.surface,
-        surfaceTintColor: Colors.transparent,
-      ),
-      dialogTheme: DialogThemeData(
-        backgroundColor: scheme.surface,
-        surfaceTintColor: Colors.transparent,
+        backgroundColor: isDark ? scheme.surfaceContainerHighest : const Color(0xFF1E293B),
       ),
     );
   }

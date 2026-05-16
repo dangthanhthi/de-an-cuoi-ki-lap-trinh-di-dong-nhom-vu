@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../widgets/ui_state_view.dart';
 
 class GroupInfoScreen extends StatefulWidget {
   final String groupId;
@@ -48,7 +49,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       final file = File(image.path);
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final fileName = "group_${widget.groupId}_$timestamp.jpg";
-      
+
       final uploadedUrl = await FirebaseService.uploadGroupAvatar(
         file,
         fileName,
@@ -197,7 +198,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       if (!mounted) return;
       _showSnack(
         result == 'SUCCESS'
-            ? (!isManager ? 'Đã cấp key bạc cho $email' : 'Đã thu hồi key bạc của $email')
+            ? (!isManager
+                  ? 'Đã cấp key bạc cho $email'
+                  : 'Đã thu hồi key bạc của $email')
             : result,
         success: result == 'SUCCESS',
       );
@@ -400,20 +403,29 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
-            appBar: AppBar(title: const Text('Lỗi')),
-            body: Center(child: Text('Đã xảy ra lỗi: ${snapshot.error}')),
+            appBar: AppBar(title: const Text('Thông tin nhóm')),
+            body: const UiStateView(
+              icon: Icons.cloud_off_outlined,
+              title: 'Không tải được thông tin nhóm',
+              message: 'Kiểm tra kết nối hoặc thử mở lại màn hình nhóm.',
+            ),
           );
         }
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+            body: UiStateLoading(message: 'Đang tải thông tin nhóm...'),
           );
         }
 
         if (!snapshot.hasData || !snapshot.data!.exists) {
           return Scaffold(
             appBar: AppBar(title: const Text('Thông tin nhóm')),
-            body: const Center(child: Text('Không tìm thấy nhóm')),
+            body: const UiStateView(
+              icon: Icons.group_off_outlined,
+              title: 'Không tìm thấy nhóm',
+              message:
+                  'Nhóm có thể đã bị giải tán hoặc bạn đã mất quyền truy cập.',
+            ),
           );
         }
 
@@ -422,11 +434,15 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         final groupAvatar = (data['avatar'] ?? '').toString();
         final leaderId = (data['leaderId'] ?? '').toString();
         final groupCode = (data['groupCode'] ?? '').toString();
-        final memberEmails = List<String>.from(data['members'] ?? const [])
-            .map((item) => item.toLowerCase().trim())
-            .where((item) => item.isNotEmpty)
-            .toSet()
-            .toList();
+        final memberEmails =
+            [
+                  ...List<String>.from(data['members'] ?? const []),
+                  ...List<String>.from(data['memberEmails'] ?? const []),
+                ]
+                .map((item) => item.toLowerCase().trim())
+                .where((item) => item.isNotEmpty)
+                .toSet()
+                .toList();
         final managerEmails = List<String>.from(
           data['managerEmails'] ?? const [],
         ).map((item) => item.toLowerCase().trim()).toSet();
@@ -533,14 +549,18 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   _QuickActionTile(
                     icon: Icons.copy_all_outlined,
                     title: 'Sao chép mã',
-                    subtitle: groupCode.isEmpty ? '\u0043\u0068\u01B0\u0061\u0020\u0063\u00F3\u0020\u006D\u00E3\u0020\u006E\u0068\u00F3\u006D' : groupCode,
+                    subtitle: groupCode.isEmpty
+                        ? '\u0043\u0068\u01B0\u0061\u0020\u0063\u00F3\u0020\u006D\u00E3\u0020\u006E\u0068\u00F3\u006D'
+                        : groupCode,
                     onTap: groupCode.isEmpty
                         ? null
                         : () async {
                             await Clipboard.setData(
                               ClipboardData(text: groupCode),
                             );
-                            _showSnack('\u0110\u00E3\u0020\u0073\u0061\u006F\u0020\u0063\u0068\u00E9\u0070\u0020\u006D\u00E3\u0020\u006E\u0068\u00F3\u006D');
+                            _showSnack(
+                              '\u0110\u00E3\u0020\u0073\u0061\u006F\u0020\u0063\u0068\u00E9\u0070\u0020\u006D\u00E3\u0020\u006E\u0068\u00F3\u006D',
+                            );
                           },
                   ),
                   _QuickActionTile(
@@ -549,7 +569,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     subtitle: isLeader
                         ? 'Cập nhật tên hiển thị'
                         : 'Chỉ trưởng nhóm được đổi tên',
-                    onTap: isLeader ? () => _showGroupNameDialog(groupName) : null,
+                    onTap: isLeader
+                        ? () => _showGroupNameDialog(groupName)
+                        : null,
                   ),
                   _QuickActionTile(
                     icon: Icons.person_add_alt_1_outlined,
@@ -599,13 +621,17 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   if (usersSnapshot.hasError) {
                     return const Padding(
                       padding: EdgeInsets.all(20),
-                      child: Center(child: Text('Lỗi tải danh sách người dùng')),
+                      child: UiStateView(
+                        icon: Icons.people_outline,
+                        title: 'Không tải được thành viên',
+                        message: 'Thử mở lại màn hình sau vài giây.',
+                      ),
                     );
                   }
                   if (!usersSnapshot.hasData) {
                     return const Padding(
                       padding: EdgeInsets.all(20),
-                      child: Center(child: CircularProgressIndicator()),
+                      child: UiStateLoading(message: 'Đang tải thành viên...'),
                     );
                   }
 
@@ -653,7 +679,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                   member.name,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                                 subtitle: Column(
                                   mainAxisSize: MainAxisSize.min,
@@ -664,7 +692,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                     ),
-                                    _buildOnlineStatusText(member.lastActive, isOnline: member.isOnline),
+                                    _buildOnlineStatusText(
+                                      member.lastActive,
+                                      isOnline: member.isOnline,
+                                    ),
                                   ],
                                 ),
                                 onTap: () => _showMemberDetailSheet(member),
@@ -766,9 +797,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       children: [
         Text(
           'Thành viên đang online',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
@@ -818,7 +849,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                               decoration: BoxDecoration(
                                 color: Colors.green,
                                 shape: BoxShape.circle,
-                                border: Border.all(color: Colors.white, width: 2),
+                                border: Border.all(
+                                  color: Colors.white,
+                                  width: 2,
+                                ),
                               ),
                             ),
                           ),
@@ -843,9 +877,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       children: [
         Text(
           'Cài đặt nhóm',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         Card(
@@ -853,14 +887,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           color: Theme.of(context).colorScheme.surfaceContainerLow,
           child: SwitchListTile(
             title: const Text('Phê duyệt thành viên mới'),
-            subtitle: const Text('Yêu cầu trưởng nhóm duyệt khi có người dùng mã gia nhập.'),
+            subtitle: const Text(
+              'Yêu cầu trưởng nhóm duyệt khi có người dùng mã gia nhập.',
+            ),
             value: requiresApproval,
             onChanged: (val) async {
-              await FirebaseFirestore.instance
-                  .collection('groups')
-                  .doc(widget.groupId)
-                  .update({'requiresApproval': val});
-              _showSnack('Đã cập nhật cài đặt nhóm');
+              final result =
+                  await FirebaseService.toggleGroupApprovalRequirement(
+                    widget.groupId,
+                    val,
+                  );
+              _showSnack(
+                result == 'SUCCESS' ? 'Đã cập nhật cài đặt nhóm' : result,
+                success: result == 'SUCCESS',
+              );
             },
           ),
         ),
@@ -874,21 +914,19 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       children: [
         Text(
           'Yêu cầu đang chờ duyệt',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
           stream: FirebaseService.getGroupRequestsForLeaderStream(),
           builder: (context, snapshot) {
             if (snapshot.hasError) return const SizedBox();
-            final docs = (snapshot.data?.docs ?? [])
-                .where((d) {
-                  final data = d.data();
-                  return data is Map && data['groupId'] == widget.groupId;
-                })
-                .toList();
+            final docs = (snapshot.data?.docs ?? []).where((d) {
+              final data = d.data();
+              return data is Map && data['groupId'] == widget.groupId;
+            }).toList();
             if (docs.isEmpty) {
               return Card(
                 elevation: 0,
@@ -924,11 +962,19 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       children: [
                         IconButton(
                           icon: const Icon(Icons.check, color: Colors.green),
-                          onPressed: () => FirebaseService.respondToGroupRequest(doc.id, true),
+                          onPressed: () =>
+                              FirebaseService.respondToGroupRequest(
+                                doc.id,
+                                true,
+                              ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, color: Colors.red),
-                          onPressed: () => FirebaseService.respondToGroupRequest(doc.id, false),
+                          onPressed: () =>
+                              FirebaseService.respondToGroupRequest(
+                                doc.id,
+                                false,
+                              ),
                         ),
                       ],
                     ),
@@ -948,9 +994,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       children: [
         Text(
           'Lịch sử hoạt động nhóm',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
@@ -962,9 +1008,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               return Card(
                 elevation: 0,
                 color: Theme.of(context).colorScheme.surfaceContainerLow,
-                child: const ListTile(
-                  title: Text('Chưa có hoạt động nào.'),
-                ),
+                child: const ListTile(title: Text('Chưa có hoạt động nào.')),
               );
             }
 
@@ -980,19 +1024,26 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   final String action = data['action'] ?? '';
                   final String detail = data['detail'] ?? '';
                   final dynamic ts = data['timestamp'];
-                  
+
                   String timeStr = '';
                   if (ts is Timestamp) {
                     final dt = ts.toDate();
-                    timeStr = '${dt.hour}:${dt.minute.toString().padLeft(2, '0')} - ${dt.day}/${dt.month}';
+                    timeStr =
+                        '${dt.hour}:${dt.minute.toString().padLeft(2, '0')} - ${dt.day}/${dt.month}';
                   }
 
                   return ListTile(
                     dense: true,
                     leading: const Icon(Icons.history, size: 20),
-                    title: Text(action, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    title: Text(
+                      action,
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
                     subtitle: Text(detail),
-                    trailing: Text(timeStr, style: const TextStyle(fontSize: 10)),
+                    trailing: Text(
+                      timeStr,
+                      style: const TextStyle(fontSize: 10),
+                    ),
                   );
                 },
               ),
@@ -1018,7 +1069,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             padding: const EdgeInsets.all(24),
             decoration: BoxDecoration(
               color: colorScheme.surface,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(32),
+              ),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1034,7 +1087,10 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 const SizedBox(height: 24),
                 CircleAvatar(
                   radius: 50,
-                  backgroundImage: avatarImageProvider(member.avatar, name: member.name),
+                  backgroundImage: avatarImageProvider(
+                    member.avatar,
+                    name: member.name,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(
@@ -1050,16 +1106,23 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   style: TextStyle(color: colorScheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 8),
-                _buildOnlineStatusText(member.lastActive, isDetail: true, isOnline: member.isOnline),
+                _buildOnlineStatusText(
+                  member.lastActive,
+                  isDetail: true,
+                  isOnline: member.isOnline,
+                ),
                 const SizedBox(height: 12),
-                _RoleBadge(isLeader: member.isLeader, isManager: member.isManager),
+                _RoleBadge(
+                  isLeader: member.isLeader,
+                  isManager: member.isManager,
+                ),
                 const SizedBox(height: 32),
                 if (!isMe)
                   FutureBuilder<String>(
                     future: FirebaseService.checkFriendshipStatus(member.email),
                     builder: (context, snapshot) {
                       final status = snapshot.data ?? 'LOADING';
-                      
+
                       if (status == 'LOADING') {
                         return const Center(child: CircularProgressIndicator());
                       }
@@ -1086,15 +1149,20 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         width: double.infinity,
                         height: 54,
                         child: FilledButton.icon(
-                          onPressed: canClick ? () async {
-                            final result = await FirebaseService.sendFriendRequest(member.email);
-                            if (result == "SUCCESS") {
-                              _showSnack('Đã gửi lời mời kết bạn!');
-                              setSheetState(() {});
-                            } else {
-                              _showSnack(result);
-                            }
-                          } : null,
+                          onPressed: canClick
+                              ? () async {
+                                  final result =
+                                      await FirebaseService.sendFriendRequest(
+                                        member.email,
+                                      );
+                                  if (result == "SUCCESS") {
+                                    _showSnack('Đã gửi lời mời kết bạn!');
+                                    setSheetState(() {});
+                                  } else {
+                                    _showSnack(result);
+                                  }
+                                }
+                              : null,
                           icon: Icon(btnIcon),
                           label: Text(btnText),
                           style: FilledButton.styleFrom(
@@ -1130,8 +1198,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     );
   }
 
-  Widget _buildOnlineStatusText(Timestamp? lastActive,
-      {bool isDetail = false, bool isOnline = false}) {
+  Widget _buildOnlineStatusText(
+    Timestamp? lastActive, {
+    bool isDetail = false,
+    bool isOnline = false,
+  }) {
     if (lastActive == null) return const SizedBox();
 
     final now = DateTime.now();
@@ -1175,7 +1246,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     } else if (diff.inDays < 7) {
       timeStr = 'Truy cập ${diff.inDays} ngày trước';
     } else {
-      timeStr = 'Truy cập ngày ${activeDate.day}/${activeDate.month}/${activeDate.year}';
+      timeStr =
+          'Truy cập ngày ${activeDate.day}/${activeDate.month}/${activeDate.year}';
     }
 
     return Text(
@@ -1323,7 +1395,6 @@ class _QuickActionTile extends StatelessWidget {
       ),
     );
   }
-
 }
 
 class _RoleBadge extends StatelessWidget {
@@ -1414,8 +1485,11 @@ class _EditGroupNameDialogState extends State<_EditGroupNameDialog> {
 
     try {
       final newName = _controller.text.trim();
-      final result = await FirebaseService.updateGroupName(widget.groupId, newName);
-      
+      final result = await FirebaseService.updateGroupName(
+        widget.groupId,
+        newName,
+      );
+
       if (!mounted) return;
       setState(() => _isSaving = false);
 
@@ -1512,13 +1586,16 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
 
   Future<void> _submit() async {
     if (_isSaving || _formKey.currentState?.validate() != true) return;
-    
+
     final email = _controller.text.trim();
     setState(() => _isSaving = true);
 
     try {
-      final result = await FirebaseService.addMemberToGroup(widget.groupId, email);
-      
+      final result = await FirebaseService.addMemberToGroup(
+        widget.groupId,
+        email,
+      );
+
       if (!mounted) return;
       if (result == "SUCCESS") {
         Navigator.pop(context);
@@ -1551,9 +1628,13 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
             prefixIcon: Icon(Icons.email_outlined),
           ),
           validator: (value) {
-            if (value == null || value.trim().isEmpty) return 'Vui lòng nhập email';
+            if (value == null || value.trim().isEmpty) {
+              return 'Vui lòng nhập email';
+            }
             final email = value.trim();
-            if (!email.contains('@') || !email.contains('.')) return 'Email không đúng định dạng';
+            if (!email.contains('@') || !email.contains('.')) {
+              return 'Email không đúng định dạng';
+            }
             return null;
           },
           onFieldSubmitted: (_) => _submit(),
@@ -1570,7 +1651,10 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
               ? const SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
                 )
               : const Text('Thêm'),
         ),
@@ -1578,11 +1662,3 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
     );
   }
 }
-
-
-
-
-
-
-
-

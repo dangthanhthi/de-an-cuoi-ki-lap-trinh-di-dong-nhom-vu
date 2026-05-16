@@ -17,7 +17,6 @@ import '../models/app_models.dart';
 import '../utils/media_utils.dart';
 // Removed AIChatNoteScreen import
 
-
 class CreateEditNoteScreen extends StatefulWidget {
   final Note? note;
   final String? docId;
@@ -144,10 +143,11 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
 
   void _showSnack(String message, {bool success = true}) {
     if (!mounted) return;
+    final colorScheme = Theme.of(context).colorScheme;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: success ? Colors.green : Colors.red,
+        backgroundColor: success ? colorScheme.tertiary : colorScheme.error,
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -176,9 +176,10 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     );
   }
 
-
   Future<void> _applyAiMetadata() async {
-    if (_titleController.text.isEmpty && _contentController.text.isEmpty) return;
+    if (_titleController.text.isEmpty && _contentController.text.isEmpty) {
+      return;
+    }
 
     try {
       final metadata = await AIService.analyzeNoteMetadata(
@@ -197,7 +198,8 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         }
 
         // Tự động gán độ ưu tiên nếu chưa có độ ưu tiên cao
-        if (_priorityChoice == NotePriority.none || _priorityChoice == NotePriority.custom) {
+        if (_priorityChoice == NotePriority.none ||
+            _priorityChoice == NotePriority.custom) {
           final priority = metadata['priority'];
           if (priority != NotePriority.none) {
             _priority = priority;
@@ -272,7 +274,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   String get _activeGroupId {
     final noteGroupId = widget.note?.groupId.trim() ?? '';
     if (noteGroupId.isNotEmpty) return noteGroupId;
-    return widget.initialGroupId?.trim() ?? '';
+    final initialGroupId = widget.initialGroupId?.trim() ?? '';
+    if (initialGroupId.isNotEmpty) return initialGroupId;
+    return FirebaseService.currentGroupId.trim();
   }
 
   bool get _usesGroupTaskMetadata => _activeGroupId.isNotEmpty;
@@ -433,7 +437,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       );
 
       if (confirm == false) return; // User cancelled
-      
+
       setState(() => _isUploading = true);
       try {
         final suggestedContent = await AIService.suggestNoteContent(
@@ -446,7 +450,8 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             } else {
               // Append logic
               final current = _contentController.text.trim();
-              _contentController.text = '$current\n\n--- Gợi ý từ AI ---\n$suggestedContent';
+              _contentController.text =
+                  '$current\n\n--- Gợi ý từ AI ---\n$suggestedContent';
             }
           });
           _applyAiMetadata();
@@ -506,8 +511,6 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       if (mounted) setState(() => _isUploading = false);
     }
   }
-
-
 
   Future<void> _saveNote() async {
     final title = _titleController.text.trim();
@@ -741,7 +744,10 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     );
   }
 
-  Future<void> _pickImageAttachment(ImageSource source, {int? todoIndex}) async {
+  Future<void> _pickImageAttachment(
+    ImageSource source, {
+    int? todoIndex,
+  }) async {
     if (_isUploading) return;
 
     if (source == ImageSource.camera) {
@@ -805,8 +811,10 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
 
       final size = file.size > 0 ? file.size : await selectedFile.length();
       if (size > FirebaseService.maxAttachmentBytes) {
-        _showSnack('Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
-            success: false);
+        _showSnack(
+          'Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
+          success: false,
+        );
         return;
       }
 
@@ -832,20 +840,28 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
 
       final selectedFile = File(path);
       if (!await selectedFile.exists()) {
-        _showSnack('Tệp không tồn tại hoặc không truy cập được.',
-            success: false);
+        _showSnack(
+          'Tệp không tồn tại hoặc không truy cập được.',
+          success: false,
+        );
         return;
       }
 
       final size = file.size > 0 ? file.size : await selectedFile.length();
       if (size > FirebaseService.maxAttachmentBytes) {
-        _showSnack('Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
-            success: false);
+        _showSnack(
+          'Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
+          success: false,
+        );
         return;
       }
 
-      await _uploadAttachmentFile(selectedFile, file.name, size,
-          todoIndex: index);
+      await _uploadAttachmentFile(
+        selectedFile,
+        file.name,
+        size,
+        todoIndex: index,
+      );
     } catch (e) {
       _showSnack('Lỗi chọn tệp: $e', success: false);
     }
@@ -972,7 +988,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             ),
             Switch(
               value: _isTodo,
-              onChanged: _isLimitedEditor ? null : (val) => setState(() => _isTodo = val),
+              onChanged: _isLimitedEditor
+                  ? null
+                  : (val) => setState(() => _isTodo = val),
               activeThumbColor: colorScheme.primary,
             ),
           ],
@@ -1001,13 +1019,15 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
           items: AppState.labels
               .map((l) => DropdownMenuItem(value: l, child: Text(l)))
               .toList(),
-          onChanged: _isLimitedEditor ? null : (val) => setState(() {
-            _hasUserChangedLabel = true;
-            _selectedLabel = val!;
-            if (_selectedLabel != AppState.otherLabel) {
-              _customLabelController.clear();
-            }
-          }),
+          onChanged: _isLimitedEditor
+              ? null
+              : (val) => setState(() {
+                  _hasUserChangedLabel = true;
+                  _selectedLabel = val!;
+                  if (_selectedLabel != AppState.otherLabel) {
+                    _customLabelController.clear();
+                  }
+                }),
         ),
       ),
     );
@@ -1021,31 +1041,33 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       backgroundColor: subtleFill,
       side: BorderSide.none,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      onPressed: _isLimitedEditor ? null : () {
-        showModalBottomSheet(
-          context: context,
-          showDragHandle: true,
-          builder: (context) => ListView(
-            shrinkWrap: true,
-            children: NotePriority.values
-                .map(
-                  (p) => ListTile(
-                    leading: const Icon(Icons.flag_outlined),
-                    title: Text(NotePriority.label(p)),
-                    selected: _priorityChoice == p,
-                    onTap: () {
-                      setState(() {
-                        _priorityChoice = p;
-                        _priority = p;
-                      });
-                      Navigator.pop(context);
-                    },
-                  ),
-                )
-                .toList(),
-          ),
-        );
-      },
+      onPressed: _isLimitedEditor
+          ? null
+          : () {
+              showModalBottomSheet(
+                context: context,
+                showDragHandle: true,
+                builder: (context) => ListView(
+                  shrinkWrap: true,
+                  children: NotePriority.values
+                      .map(
+                        (p) => ListTile(
+                          leading: const Icon(Icons.flag_outlined),
+                          title: Text(NotePriority.label(p)),
+                          selected: _priorityChoice == p,
+                          onTap: () {
+                            setState(() {
+                              _priorityChoice = p;
+                              _priority = p;
+                            });
+                            Navigator.pop(context);
+                          },
+                        ),
+                      )
+                      .toList(),
+                ),
+              );
+            },
     );
   }
 
@@ -1204,7 +1226,8 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final subtleFill = colorScheme.surfaceContainerHighest.withValues(alpha: Theme.of(context).brightness == Brightness.dark ? 0.48 : 1,
+    final subtleFill = colorScheme.surfaceContainerHighest.withValues(
+      alpha: Theme.of(context).brightness == Brightness.dark ? 0.48 : 1,
     );
 
     return Scaffold(
@@ -1221,7 +1244,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               onPressed: _showTemplateSheet,
             ),
             PopupMenuButton<int>(
-              icon: const Icon(Icons.electric_bolt, color: Colors.orange),
+              icon: Icon(Icons.electric_bolt, color: colorScheme.tertiary),
               tooltip: 'Hỗ trợ AI',
               onSelected: (value) {
                 if (value == 1) _suggestContentOnly();
@@ -1268,6 +1291,13 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                   vertical: 10,
                 ),
                 children: [
+                  _buildSectionHeader(
+                    icon: Icons.tune_rounded,
+                    title: 'Thông tin ghi chú',
+                    subtitle: 'Màu, tiêu đề, nhãn, mức ưu tiên và nhắc hẹn',
+                  ),
+                  const SizedBox(height: 12),
+
                   // Color Picker
                   SizedBox(
                     height: 36,
@@ -1278,8 +1308,8 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                         onTap: _isLimitedEditor
                             ? null
                             : () => setState(
-                                  () => _selectedColor = AppState.noteColors[i],
-                                ),
+                                () => _selectedColor = AppState.noteColors[i],
+                              ),
                         child: Container(
                           width: 32,
                           height: 32,
@@ -1307,18 +1337,29 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                       margin: const EdgeInsets.only(bottom: 16),
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer.withValues(alpha: 0.15),
+                        color: colorScheme.primaryContainer.withValues(
+                          alpha: 0.15,
+                        ),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: colorScheme.primary.withValues(alpha: 0.3)),
+                        border: Border.all(
+                          color: colorScheme.primary.withValues(alpha: 0.3),
+                        ),
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.info_outline, color: colorScheme.primary, size: 20),
+                          Icon(
+                            Icons.info_outline,
+                            color: colorScheme.primary,
+                            size: 20,
+                          ),
                           const SizedBox(width: 12),
                           const Expanded(
                             child: Text(
                               'Bạn đang ở chế độ đóng góp: Có thể thêm file/ảnh nhưng không thể sửa nội dung chính.',
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
                             ),
                           ),
                         ],
@@ -1363,11 +1404,13 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                       IconButton(
                         icon: Icon(
                           Icons.format_paint_outlined,
-                          color: _isLimitedEditor 
+                          color: _isLimitedEditor
                               ? colorScheme.outline
                               : colorScheme.primary.withValues(alpha: 0.75),
                         ),
-                        onPressed: _isLimitedEditor ? null : _showTitleFormattingSheet,
+                        onPressed: _isLimitedEditor
+                            ? null
+                            : _showTitleFormattingSheet,
                         tooltip: 'Định dạng tiêu đề',
                       ),
                     ],
@@ -1413,24 +1456,19 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     _buildGroupContextCard(colorScheme),
                   ],
 
-                  const Divider(height: 40),
-
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        _isTodo ? 'Công việc cần làm' : 'Nội dung',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: colorScheme.primary,
-                        ),
-                      ),
-                    ],
+                  const SizedBox(height: 24),
+                  _buildSectionHeader(
+                    icon: _isTodo
+                        ? Icons.checklist_rounded
+                        : Icons.notes_rounded,
+                    title: _isTodo ? 'Công việc cần làm' : 'Nội dung',
+                    subtitle: _isTodo
+                        ? 'Theo dõi từng việc, người phụ trách và tệp liên quan'
+                        : 'Soạn nội dung chính của ghi chú',
                   ),
                   const SizedBox(height: 12),
                   _isTodo ? _buildTodoList() : _buildTextContent(),
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 24),
                 ],
               ),
             ),
@@ -1445,7 +1483,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
           color: colorScheme.surface,
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
+              color: colorScheme.shadow.withValues(alpha: 0.08),
               offset: const Offset(0, -2),
               blurRadius: 10,
             ),
@@ -1480,12 +1518,16 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     IconButton(
                       icon: const Icon(Icons.image_outlined),
                       tooltip: 'Thêm ảnh',
-                      onPressed: _isUploading ? null : () => _showImageSourceSheet(),
+                      onPressed: _isUploading
+                          ? null
+                          : () => _showImageSourceSheet(),
                     ),
                     IconButton(
                       icon: const Icon(Icons.attach_file_rounded),
                       tooltip: 'Đính kèm tệp',
-                      onPressed: _isUploading ? null : () => _pickFileAttachment(),
+                      onPressed: _isUploading
+                          ? null
+                          : () => _pickFileAttachment(),
                     ),
                     IconButton(
                       icon: Icon(
@@ -1517,11 +1559,60 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     );
   }
 
+  Widget _buildSectionHeader({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: colorScheme.primaryContainer.withValues(alpha: 0.52),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, size: 19, color: colorScheme.primary),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+              ),
+              if (subtitle != null && subtitle.trim().isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                    height: 1.3,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildTextContent() {
     final colorScheme = Theme.of(context).colorScheme;
-    final contentColor = widget.note?.resolvedContentColor ?? 
-                        (_contentTextColor.isNotEmpty ? Color(int.parse(_contentTextColor, radix: 16)) : colorScheme.onSurface);
-    
+    final contentColor =
+        widget.note?.resolvedContentColor ??
+        (_contentTextColor.isNotEmpty
+            ? Color(int.parse(_contentTextColor, radix: 16))
+            : colorScheme.onSurface);
+
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
@@ -1530,7 +1621,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         border: Border.all(color: colorScheme.outlineVariant, width: 1.2),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
+            color: colorScheme.shadow.withValues(alpha: 0.05),
             blurRadius: 10,
             offset: const Offset(0, 4),
           ),
@@ -1544,11 +1635,13 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             children: [
               IconButton(
                 icon: Icon(
-                  Icons.format_size, 
+                  Icons.format_size,
                   size: 20,
                   color: _isLimitedEditor ? colorScheme.outline : null,
                 ),
-                onPressed: _isLimitedEditor ? null : () => _showContentStyleSheet(),
+                onPressed: _isLimitedEditor
+                    ? null
+                    : () => _showContentStyleSheet(),
                 tooltip: 'Định dạng nội dung',
               ),
             ],
@@ -1564,7 +1657,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               height: 1.7,
               fontWeight: _contentIsBold ? FontWeight.bold : FontWeight.normal,
               fontStyle: _contentIsItalic ? FontStyle.italic : FontStyle.normal,
-              decoration: _contentIsUnderlined ? TextDecoration.underline : null,
+              decoration: _contentIsUnderlined
+                  ? TextDecoration.underline
+                  : null,
               color: contentColor,
             ),
             decoration: const InputDecoration(
@@ -1574,7 +1669,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               focusedBorder: InputBorder.none,
               filled: false,
               contentPadding: EdgeInsets.zero,
-            counterText: '',
+              counterText: '',
             ),
           ),
         ],
@@ -1647,7 +1742,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                               isDone: newVal,
                               markCompletedNow: newVal,
                               clearCompletedAt: !newVal,
-                              status: newVal ? TodoStatus.done : TodoStatus.todo,
+                              status: newVal
+                                  ? TodoStatus.done
+                                  : TodoStatus.todo,
                             );
                           });
                         },
@@ -1665,16 +1762,27 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     onChanged: (val) => _todos[index].task = val,
                     style: TextStyle(
                       fontSize: _todos[index].fontSize,
-                      fontWeight: _todos[index].isBold ? FontWeight.bold : FontWeight.w600,
-                      fontStyle: _todos[index].isItalic ? FontStyle.italic : FontStyle.normal,
+                      fontWeight: _todos[index].isBold
+                          ? FontWeight.bold
+                          : FontWeight.w600,
+                      fontStyle: _todos[index].isItalic
+                          ? FontStyle.italic
+                          : FontStyle.normal,
                       decoration: isDone
                           ? TextDecoration.lineThrough
-                          : (_todos[index].isUnderlined ? TextDecoration.underline : null),
+                          : (_todos[index].isUnderlined
+                                ? TextDecoration.underline
+                                : null),
                       color: isDone
                           ? mutedText
                           : (_todos[index].textColor.isNotEmpty
-                              ? Color(int.parse(_todos[index].textColor, radix: 16)).withValues(alpha: 1.0)
-                              : colorScheme.onSurface),
+                                ? Color(
+                                    int.parse(
+                                      _todos[index].textColor,
+                                      radix: 16,
+                                    ),
+                                  ).withValues(alpha: 1.0)
+                                : colorScheme.onSurface),
                     ),
                     textCapitalization: _todos[index].isUppercase
                         ? TextCapitalization.characters
@@ -1693,7 +1801,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     color: colorScheme.primary.withValues(alpha: 0.7),
                     size: 20,
                   ),
-                  onPressed: !_canModifyTodo(index) ? null : () => _showTodoFormattingSheet(index),
+                  onPressed: !_canModifyTodo(index)
+                      ? null
+                      : () => _showTodoFormattingSheet(index),
                   visualDensity: VisualDensity.compact,
                   tooltip: 'Định dạng',
                 ),
@@ -1731,14 +1841,16 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1938,7 +2050,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       children: todo.attachments.map((url) {
         final fileName = url.split('%2F').last.split('?').first;
         final isImage =
-            url.contains('.jpg') || url.contains('.png') || url.contains('.jpeg');
+            url.contains('.jpg') ||
+            url.contains('.png') ||
+            url.contains('.jpeg');
 
         return Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1951,7 +2065,9 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                isImage ? Icons.image_outlined : Icons.insert_drive_file_outlined,
+                isImage
+                    ? Icons.image_outlined
+                    : Icons.insert_drive_file_outlined,
                 size: 14,
                 color: colorScheme.primary,
               ),
@@ -2493,7 +2609,11 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 child: ListView(
                   scrollDirection: Axis.horizontal,
                   children: [
-                    _buildContentColorOption('', Icons.format_color_reset, setSheetState),
+                    _buildContentColorOption(
+                      '',
+                      Icons.format_color_reset,
+                      setSheetState,
+                    ),
                     _buildContentColorOption('FF000000', null, setSheetState),
                     _buildContentColorOption('FFF44336', null, setSheetState),
                     _buildContentColorOption('FFE91E63', null, setSheetState),
@@ -2577,7 +2697,11 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     );
   }
 
-  Widget _buildContentColorOption(String colorHex, IconData? icon, StateSetter setSheetState) {
+  Widget _buildContentColorOption(
+    String colorHex,
+    IconData? icon,
+    StateSetter setSheetState,
+  ) {
     final isSelected = _contentTextColor == colorHex;
     return GestureDetector(
       onTap: () => setState(() {
@@ -2589,14 +2713,20 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-          color: colorHex.isEmpty ? Colors.white : Color(int.parse(colorHex, radix: 16)),
+          color: colorHex.isEmpty
+              ? Colors.white
+              : Color(int.parse(colorHex, radix: 16)),
           shape: BoxShape.circle,
           border: Border.all(
-            color: isSelected ? Colors.blue : Colors.grey.withValues(alpha: 0.3),
+            color: isSelected
+                ? Colors.blue
+                : Colors.grey.withValues(alpha: 0.3),
             width: isSelected ? 3 : 1,
           ),
         ),
-        child: icon != null ? Icon(icon, size: 20, color: Colors.grey[700]) : null,
+        child: icon != null
+            ? Icon(icon, size: 20, color: Colors.grey[700])
+            : null,
       ),
     );
   }
@@ -2617,7 +2747,3 @@ class _NoteTemplate {
     this.todos = const [],
   });
 }
-
-
-
-

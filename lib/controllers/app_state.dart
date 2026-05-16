@@ -51,7 +51,7 @@ class AppState {
   static final ValueNotifier<bool> notificationsEnabledNotifier = ValueNotifier(
     true,
   );
-  
+
   static const String _prefDarkModeKey = 'app_dark_mode';
   static const String _prefNotificationsKey = 'app_notifications_enabled';
 
@@ -67,7 +67,7 @@ class AppState {
   static Future<void> setLocalThemeMode(bool darkMode) async {
     themeModeNotifier.value = darkMode ? ThemeMode.dark : ThemeMode.light;
     await persistLocalSettings(darkMode: darkMode);
-    
+
     // Sync to Firestore if logged in
     if (currentUserEmail.isNotEmpty) {
       await FirebaseService.updateUserSettings(darkMode: darkMode);
@@ -127,19 +127,21 @@ class AppState {
 
   static void applyUserSettings(Map<String, dynamic>? settings) {
     if (settings == null) return;
-    
+
     final hasDarkMode = settings['darkMode'] is bool;
     final hasNotificationsEnabled = settings['notificationsEnabled'] is bool;
-    
+
     if (hasDarkMode) {
       final darkMode = settings['darkMode'] as bool;
-      if (themeModeNotifier.value != (darkMode ? ThemeMode.dark : ThemeMode.light)) {
+      if (themeModeNotifier.value !=
+          (darkMode ? ThemeMode.dark : ThemeMode.light)) {
         themeModeNotifier.value = darkMode ? ThemeMode.dark : ThemeMode.light;
       }
     }
-    
+
     if (hasNotificationsEnabled) {
-      notificationsEnabledNotifier.value = settings['notificationsEnabled'] as bool;
+      notificationsEnabledNotifier.value =
+          settings['notificationsEnabled'] as bool;
     }
 
     persistLocalSettings(
@@ -182,6 +184,7 @@ class AppState {
         if (data['settings'] is Map<String, dynamic>) {
           applyUserSettings(data['settings'] as Map<String, dynamic>);
         }
+        await FirebaseService.migrateLegacyUserData();
         return null;
       }
 
@@ -191,13 +194,12 @@ class AppState {
       currentUserAvatar =
           user.photoURL ??
           "https://ui-avatars.com/api/?name=$currentUserName&background=random";
-      
+
       await FirebaseService.hydrateUser(user, fallbackEmail: fallbackEmail);
+      await FirebaseService.migrateLegacyUserData();
       return null;
     } catch (e) {
       return "Lỗi đồng bộ dữ liệu: $e";
     }
   }
 }
-
-

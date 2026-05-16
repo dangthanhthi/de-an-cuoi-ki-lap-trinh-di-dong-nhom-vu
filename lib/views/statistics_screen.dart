@@ -2,8 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../controllers/app_state.dart';
-import '../controllers/firebase_service.dart';
 import '../controllers/statistics_controller.dart';
+import 'note_detail_screen.dart';
 import '../models/app_models.dart';
 
 class StatisticsScreen extends StatefulWidget {
@@ -114,36 +114,44 @@ class _StatsView extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
-        _ProgressSummary(
+        _EfficiencyCircularCard(
           completed: stats.done,
-          total: stats.totalNotes,
+          total: stats.totalItems,
           value: stats.doneRate,
+          title: 'Hiệu suất ghi chú',
+          subtitle: 'Bạn đã hoàn thành ${stats.done} trên ${stats.totalItems} ghi chú.',
         ),
-        const SizedBox(height: 24),
-        _SectionTitle(title: 'Tổng quan công việc'),
-        const SizedBox(height: 12),
-        _buildMetricsGrid(context),
         const SizedBox(height: 32),
+        _SectionTitle(title: 'Tổng quan công việc'),
+        const SizedBox(height: 16),
+        _buildMetricsGrid(context),
+        const SizedBox(height: 40),
         _SectionTitle(
           title: 'Hoạt động tuần này',
           trailing: 'Dựa trên việc hoàn thành',
         ),
         const SizedBox(height: 16),
         _ActivityBarChart(data: stats.dailyActivity, color: colorScheme.primary),
-        const SizedBox(height: 32),
-        if (stats.topMembers.isNotEmpty) ...[
-          _SectionTitle(title: 'Thành viên tích cực'),
-          const SizedBox(height: 12),
-          ...stats.topMembers.map((member) => _MemberLeaderboardTile(member: member)),
-          const SizedBox(height: 32),
+        const SizedBox(height: 40),
+        
+        if (stats.topGroups.isNotEmpty) ...[
+          _SectionTitle(title: 'Nhóm hoạt động nhiều nhất'),
+          const SizedBox(height: 16),
+          ...stats.topGroups.map((group) => _GroupActivityTile(group: group)),
+          const SizedBox(height: 40),
         ],
+
+        if (stats.topSharers.isNotEmpty) ...[
+          _SectionTitle(title: 'Top người chia sẻ'),
+          const SizedBox(height: 16),
+          ...stats.topSharers.map((sharer) => _SharerActivityTile(sharer: sharer)),
+          const SizedBox(height: 40),
+        ],
+
         _SectionTitle(title: 'Phân bổ ưu tiên'),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
         _PriorityBreakdown(priorityCounts: stats.priorityCounts),
-        const SizedBox(height: 32),
-        _SectionTitle(title: 'Nhãn phổ biến'),
-        const SizedBox(height: 12),
-        _LabelCloud(labelCounts: stats.labelCounts),
+        const SizedBox(height: 40),
       ],
     );
   }
@@ -180,19 +188,33 @@ class _StatsView extends StatelessWidget {
         final cards = [
           _MetricCard(
             icon: Icons.assignment_outlined,
-            label: 'Tổng công việc',
-            value: '${stats.totalNotes}',
+            label: 'Tổng ghi chú',
+            value: '${stats.totalItems}',
             color: colorScheme.primary,
-            onTap: () => showNotes('Tất cả công việc', notes),
+            onTap: () => showNotes('Tất cả ghi chú', notes.where((n) {
+              final myEmail = (AppState.currentUserEmail).toLowerCase().trim();
+              final isCreator = n.createdByEmail.toLowerCase().trim() == myEmail;
+              final isAssignee = n.todos.any((t) => t.assigneeEmail.toLowerCase().trim() == myEmail);
+              return isCreator || isAssignee;
+            }).toList()),
           ),
           _MetricCard(
             icon: Icons.check_circle_outline,
-            label: 'Hoàn thành',
+            label: 'Đã hoàn thành',
             value: '${stats.done}',
             color: Colors.green,
-            onTap: () => showNotes('Công việc đã xong', notes.where((n) {
-              if (n.todos.isEmpty) return false;
-              return n.todos.every((t) => t.isDone || t.status == TodoStatus.done);
+            onTap: () => showNotes('Ghi chú đã xong', notes.where((n) {
+              final myEmail = (AppState.currentUserEmail).toLowerCase().trim();
+              final myTodos = n.todos.where((t) => t.assigneeEmail.toLowerCase().trim() == myEmail).toList();
+              final isCreator = n.createdByEmail.toLowerCase().trim() == myEmail;
+              
+              if (myTodos.isNotEmpty) {
+                return myTodos.every((t) => t.isDone || t.status == TodoStatus.done);
+              } else if (isCreator) {
+                if (n.todos.isEmpty) return true;
+                return n.todos.every((t) => t.isDone || t.status == TodoStatus.done);
+              }
+              return false;
             }).toList()),
           ),
           _MetricCard(
@@ -236,71 +258,105 @@ class _StatsView extends StatelessWidget {
   }
 }
 
-class _ProgressSummary extends StatelessWidget {
+class _EfficiencyCircularCard extends StatelessWidget {
   final int completed;
   final int total;
   final double value;
+  final String? title;
+  final String? subtitle;
 
-  const _ProgressSummary({required this.completed, required this.total, required this.value});
+  const _EfficiencyCircularCard({
+    required this.completed,
+    required this.total,
+    required this.value,
+    this.title,
+    this.subtitle,
+  });
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
 
     return Container(
       padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [colorScheme.primary, colorScheme.primaryContainer.withValues(alpha: 0.9)],
+          colors: [
+            colorScheme.primary,
+            colorScheme.secondary,
+          ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(28),
+        borderRadius: BorderRadius.circular(32),
         boxShadow: [
           BoxShadow(
             color: colorScheme.primary.withValues(alpha: 0.3),
-            blurRadius: 20,
-            offset: const Offset(0, 10),
+            blurRadius: 24,
+            offset: const Offset(0, 12),
           ),
         ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Hiệu suất tổng thể',
-                style: TextStyle(color: colorScheme.onPrimary, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: colorScheme.onPrimary.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(20),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title ?? 'Hiệu suất tổng thể',
+                  style: textTheme.titleLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
-                child: Text(
-                  '${(value * 100).toInt()}%',
-                  style: TextStyle(color: colorScheme.onPrimary, fontSize: 14, fontWeight: FontWeight.bold),
+                const SizedBox(height: 8),
+                Text(
+                  subtitle ?? 'Bạn đã hoàn thành $completed trên $total công việc.',
+                  style: textTheme.bodyMedium?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.8),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    value >= 0.8 ? 'Cực kỳ hiệu quả! 🚀' : value >= 0.5 ? 'Đang tiến triển tốt 👍' : 'Cần cố gắng thêm 💪',
+                    style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 24),
+          Stack(
+            alignment: Alignment.center,
+            children: [
+              SizedBox(
+                width: 80,
+                height: 80,
+                child: CircularProgressIndicator(
+                  value: value,
+                  strokeWidth: 10,
+                  backgroundColor: Colors.white.withValues(alpha: 0.15),
+                  valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                  strokeCap: StrokeCap.round,
+                ),
+              ),
+              Text(
+                '${(value * 100).toInt()}%',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
                 ),
               ),
             ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Bạn đã hoàn thành $completed trên $total mục tiêu.',
-            style: TextStyle(color: colorScheme.onPrimary.withValues(alpha: 0.8), fontSize: 14),
-          ),
-          const SizedBox(height: 24),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(10),
-            child: LinearProgressIndicator(
-              value: value,
-              minHeight: 10,
-              backgroundColor: colorScheme.onPrimary.withValues(alpha: 0.15),
-              valueColor: AlwaysStoppedAnimation<Color>(colorScheme.onPrimary),
-            ),
           ),
         ],
       ),
@@ -411,34 +467,142 @@ class _ActivityBarChart extends StatelessWidget {
   }
 }
 
-class _MemberLeaderboardTile extends StatelessWidget {
-  final MemberStat member;
-  const _MemberLeaderboardTile({required this.member});
+class _SharerActivityTile extends StatelessWidget {
+  final SharerStat sharer;
+  const _SharerActivityTile({required this.sharer});
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 8),
-      color: colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: colorScheme.primaryContainer,
-          child: Text(member.name[0].toUpperCase(), style: TextStyle(color: colorScheme.primary, fontWeight: FontWeight.bold)),
-        ),
-        title: Text(member.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(member.email, style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant)),
-        trailing: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12)),
-          child: Text('${member.completedCount} đã xong', style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold, fontSize: 12)),
-        ),
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: colorScheme.primary.withValues(alpha: 0.1),
+              shape: BoxShape.circle,
+            ),
+            child: Icon(Icons.person_outline, color: colorScheme.primary, size: 20),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  sharer.name,
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                Text(
+                  sharer.email,
+                  style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '${sharer.count} ghi chú',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                color: colorScheme.onPrimaryContainer,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
+
+class _GroupActivityTile extends StatelessWidget {
+  final GroupStat group;
+  const _GroupActivityTile({required this.group});
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final efficiency = group.efficiency;
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.groups_outlined, color: colorScheme.primary, size: 20),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      group.name,
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
+                    Text(
+                      '${group.completedCount}/${group.totalCount} công việc hoàn thành',
+                      style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                '${(efficiency * 100).toInt()}%',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                  color: efficiency >= 0.8 ? Colors.green : efficiency >= 0.5 ? colorScheme.primary : colorScheme.error,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: efficiency,
+              minHeight: 6,
+              backgroundColor: colorScheme.outlineVariant.withValues(alpha: 0.2),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                efficiency >= 0.8 ? Colors.green : efficiency >= 0.5 ? colorScheme.primary : colorScheme.error,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 class _PriorityBreakdown extends StatelessWidget {
   final Map<String, int> priorityCounts;
@@ -469,28 +633,6 @@ class _PriorityBreakdown extends StatelessWidget {
   }
 }
 
-class _LabelCloud extends StatelessWidget {
-  final Map<String, int> labelCounts;
-  const _LabelCloud({required this.labelCounts});
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    if (labelCounts.isEmpty) return const Text('Chưa có nhãn nào');
-    
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: labelCounts.entries.map((e) => Chip(
-        label: Text(e.key),
-        avatar: CircleAvatar(child: Text('${e.value}', style: const TextStyle(fontSize: 10))),
-        backgroundColor: colorScheme.surfaceContainerHigh,
-        side: BorderSide.none,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      )).toList(),
-    );
-  }
-}
 
 class _SectionTitle extends StatelessWidget {
   final String title;
@@ -547,7 +689,12 @@ class _FilteredNotesList extends StatelessWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () {
               Navigator.pop(context);
-              Navigator.pushNamed(context, '/note_detail', arguments: note);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => NoteDetailScreen(note: note),
+                ),
+              );
             },
           ),
         );

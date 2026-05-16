@@ -13,6 +13,14 @@ import '../utils/media_utils.dart';
 import 'local_service.dart';
 import 'app_state.dart';
 
+export 'services/auth_service.dart';
+export 'services/note_service.dart';
+export 'services/group_service.dart';
+export 'services/chat_service.dart';
+export 'services/activity_service.dart';
+export 'services/contact_service.dart';
+export 'services/base_service.dart';
+
 class FirebaseService {
   static final FirebaseFirestore _db = FirebaseFirestore.instance;
   static final FirebaseStorage _storage = FirebaseStorage.instanceFor(
@@ -30,9 +38,6 @@ class FirebaseService {
     return !result.contains(ConnectivityResult.none);
   }
 
-  static String _safeDocId(String value) {
-    return value.toLowerCase().trim().replaceAll(RegExp(r'[^a-z0-9._-]'), '_');
-  }
 
   static DateTime? _readDateTime(dynamic value) {
     if (value is Timestamp) return value.toDate();
@@ -103,7 +108,7 @@ class FirebaseService {
       sharedWith: _normalizeEmailList(data['sharedWith']),
       hasReminder: data['hasReminder'] == true,
       reminderTime: _readDateTime(data['reminderTime']),
-      attachments: _normalizeEmailList(data['attachments']),
+      attachments: _normalizeStringList(data['attachments']),
       isPinned: data['isPinned'] == true,
       priority: NotePriority.normalize(
         (data['priority'] ?? NotePriority.none).toString(),
@@ -116,6 +121,20 @@ class FirebaseService {
       pinnedBy: _normalizeEmailList(data['pinnedBy']),
       viewedBy: _normalizeEmailList(data['viewedBy']),
       hiddenBy: _normalizeEmailList(data['hiddenBy']),
+      titleIsStrikethrough: data['titleIsStrikethrough'] == true,
+      contentIsStrikethrough: data['contentIsStrikethrough'] == true,
+      isArchived: data['isArchived'] == true,
+      isLocked: data['isLocked'] == true,
+      isShared: data['isShared'] == true,
+      isHidden: data['isHidden'] == true,
+      isFavorite: data['isFavorite'] == true,
+      isChecklist: data['isChecklist'] == true,
+      backgroundColor: data['backgroundColor'] as int?,
+      userId: (data['userId'] ?? '').toString(),
+      assignedTo: _normalizeEmailList(data['assignedTo']),
+      lastViewedAt: _readDateTime(data['lastViewedAt']),
+      viewCount: (data['viewCount'] ?? 0) as int,
+      status: TodoStatus.normalize((data['status'] ?? '').toString()),
     );
   }
 
@@ -130,6 +149,7 @@ class FirebaseService {
       'title': note.title,
       'content': note.content,
       'titleTextColor': note.titleTextColor,
+      'status': TodoStatus.normalize(note.status),
       'titleIsBold': note.titleIsBold,
       'titleIsItalic': note.titleIsItalic,
       'titleIsUnderlined': note.titleIsUnderlined,
@@ -143,19 +163,31 @@ class FirebaseService {
       'isTodo': note.isTodo,
       'todos': note.todos.map((t) => t.toMap()).toList(),
       'assigneeEmails': assigneeEmails,
-      'sharedWith': note.sharedWith,
+      'sharedWith': _normalizeEmailList(note.sharedWith),
       'color': note.coverColor.toARGB32(),
       'groupId': groupId ?? note.groupId,
       'groupName': note.groupName,
       'createdByEmail': note.createdByEmail,
       'createdByName': note.createdByName,
       'isPinned': note.isPinned,
-      'pinnedBy': note.pinnedBy,
       'priority': NotePriority.normalize(note.priority),
       'hasReminder': note.hasReminder,
       'reminderTime': note.reminderTime?.toIso8601String(),
-      'attachments': note.attachments,
+      'attachments': _normalizeStringList(note.attachments),
       'isRichText': note.isRichText,
+      'titleIsStrikethrough': note.titleIsStrikethrough,
+      'contentIsStrikethrough': note.contentIsStrikethrough,
+      'isArchived': note.isArchived,
+      'isLocked': note.isLocked,
+      'isShared': note.isShared,
+      'isHidden': note.isHidden,
+      'isFavorite': note.isFavorite,
+      'isChecklist': note.isChecklist,
+      'backgroundColor': note.backgroundColor,
+      'userId': note.userId,
+      'assignedTo': note.assignedTo,
+      'lastViewedAt': note.lastViewedAt?.toIso8601String(),
+      'viewCount': note.viewCount,
     };
   }
 
@@ -163,10 +195,12 @@ class FirebaseService {
     final safeName = sanitizeFileName(fileName);
     final uid = currentUid;
     if (uid.isEmpty) throw Exception('User UID is empty. Please login again.');
-    
-    return _storage.ref().child('note_attachments').child(uid).child(
-      '${DateTime.now().millisecondsSinceEpoch}_$safeName',
-    );
+
+    return _storage
+        .ref()
+        .child('note_attachments')
+        .child(uid)
+        .child('${DateTime.now().millisecondsSinceEpoch}_$safeName');
   }
 
   static SettableMetadata _attachmentMetadata(String fileName) {
@@ -232,8 +266,69 @@ class FirebaseService {
         .toList();
   }
 
+  static List<String> _normalizeStringList(dynamic rawValue) {
+    if (rawValue is! List) return <String>[];
+    return rawValue
+        .map((item) => item.toString().trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
   static List<String> _groupManagerEmails(Map<String, dynamic> data) {
     return _normalizeEmailList(data['managerEmails']);
+  }
+
+  static List<String> _groupMemberEmails(Map<String, dynamic> data) {
+    return {
+      ..._normalizeEmailList(data['members']),
+      ..._normalizeEmailList(data['memberEmails']),
+    }.toList();
+  }
+
+  static Future<void> migrateLegacyUserData() async {
+    if (currentUid.isEmpty) return;
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    if (myEmail.isEmpty) return;
+
+    try {
+      final legacyGroups = await _db
+          .collection('groups')
+          .where('memberEmails', arrayContains: myEmail)
+          .get();
+      for (final doc in legacyGroups.docs) {
+        final data = doc.data();
+        final members = _groupMemberEmails(data);
+        if (members.isEmpty) continue;
+        await doc.reference.set({
+          'members': members,
+          'managerEmails': _groupManagerEmails(data),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+    } catch (e) {
+      debugPrint('Legacy group migration skipped: $e');
+    }
+
+    try {
+      final userDoc = await _db.collection('users').doc(currentUid).get();
+      final blockedEmails = _normalizeEmailList(
+        userDoc.data()?['blockedEmails'],
+      );
+      for (final email in blockedEmails) {
+        await _db
+            .collection('users')
+            .doc(currentUid)
+            .collection('blocks')
+            .doc(email)
+            .set({
+              'type': 'user',
+              'targetEmail': email,
+              'createdAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+      }
+    } catch (e) {
+      debugPrint('Legacy block migration skipped: $e');
+    }
   }
 
   static Future<String> _readGroupName(String groupId) async {
@@ -292,74 +387,15 @@ class FirebaseService {
     String action,
     String detail, {
     String? groupId,
-  }) async {
-    try {
-      if (currentUid.isEmpty) return;
-      await _db.collection('users').doc(currentUid).collection('activities').add({
-        'action': action,
-        'detail': detail,
-        'groupId': groupId,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      
-      if (groupId != null && groupId.isNotEmpty) {
-        await _db.collection('groups').doc(groupId).collection('activities').add({
-          'action': action,
-          'detail': detail,
-          'userId': currentUid,
-          'userEmail': AppState.currentUserEmail,
-          'userName': AppState.currentUserName,
-          'timestamp': FieldValue.serverTimestamp(),
-        });
-      }
-    } catch (e) {
-      debugPrint("Save Activity Error: $e");
-    }
-  }
+  }) => ActivityService.saveActivity(action, detail, groupId: groupId);
 
-  static Stream<QuerySnapshot> getActivitiesStream() {
-    if (currentUid.isEmpty) return const Stream.empty();
-    return _db
-        .collection('users')
-        .doc(currentUid)
-        .collection('activities')
-        .orderBy('timestamp', descending: true)
-        .snapshots();
-  }
+  static Stream<QuerySnapshot> getActivitiesStream() => ActivityService.getActivitiesStream();
 
-  static Stream<QuerySnapshot> getGroupActivitiesStream(String groupId) {
-    // Truy vấn tất cả activities của người dùng hiện tại liên quan đến groupId này
-    if (currentUid.isEmpty) return const Stream.empty();
-    return _db
-        .collection('users')
-        .doc(currentUid)
-        .collection('activities')
-        .where('groupId', isEqualTo: groupId)
-        .orderBy('timestamp', descending: true)
-        .snapshots();
-  }
+  static Stream<QuerySnapshot> getGroupActivitiesStream(String groupId) => ActivityService.getGroupActivitiesStream(groupId);
 
-  static Future<void> deleteActivity(String activityId) async {
-    if (currentUid.isEmpty || activityId.isEmpty) return;
-    await _db
-        .collection('users')
-        .doc(currentUid)
-        .collection('activities')
-        .doc(activityId)
-        .delete();
-  }
+  static Future<void> deleteActivity(String activityId) => ActivityService.deleteActivity(activityId);
 
-  static Future<void> clearMyActivities() async {
-    if (currentUid.isEmpty) return;
-    final snapshot = await _db
-        .collection('users')
-        .doc(currentUid)
-        .collection('activities')
-        .get();
-    for (final doc in snapshot.docs) {
-      await doc.reference.delete();
-    }
-  }
+  static Future<void> clearMyActivities() => ActivityService.clearMyActivities();
 
   static Future<void> hydrateUser(User user, {String? fallbackEmail}) async {
     AppState.currentUserEmail = user.email ?? fallbackEmail ?? "";
@@ -413,14 +449,12 @@ class FirebaseService {
     if (currentUid.isEmpty) return "Chưa đăng nhập";
     try {
       final data = <String, dynamic>{};
-      if (darkMode != null) data['darkMode'] = darkMode;
+      if (darkMode != null) data['settings.darkMode'] = darkMode;
       if (notificationsEnabled != null) {
-        data['notificationsEnabled'] = notificationsEnabled;
+        data['settings.notificationsEnabled'] = notificationsEnabled;
       }
       if (data.isNotEmpty) {
-        await _db.collection('users').doc(currentUid).update({
-          'settings': data,
-        });
+        await _db.collection('users').doc(currentUid).update(data);
       }
       return "SUCCESS";
     } catch (e) {
@@ -430,283 +464,17 @@ class FirebaseService {
 
   // --- 3. Phần danh bạ ---
 
-  static Future<String> sendFriendRequest(String email) async {
-    if (currentUid.isEmpty) return "Lỗi: Chưa đăng nhập";
+  static Future<String> sendFriendRequest(String email) => ContactService.sendFriendRequest(email);
+  static Stream<QuerySnapshot> getFriendRequestsStream() => ContactService.getFriendRequestsStream();
+  static Future<String> acceptFriendRequest(String requestId, Map<String, dynamic> requestData) => ContactService.acceptFriendRequest(requestId, requestData);
+  static Future<String> rejectFriendRequest(String requestId) => ContactService.rejectFriendRequest(requestId);
+  static Stream<QuerySnapshot> getContactsStream() => ContactService.getContactsStream();
+  static Future<String> removeContact(String contactDocId, String contactEmail) => ContactService.removeContact(contactDocId, contactEmail);
+  static Future<String> updateContactName(String contactDocId, String name) => ContactService.updateContactName(contactDocId, name);
+  static Future<String> getContactDocIdByEmail(String email) => ContactService.getContactDocIdByEmail(email);
+  static Future<String> checkFriendshipStatus(String email) => ContactService.checkFriendshipStatus(email);
 
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    if (myEmail.isEmpty) return "Lỗi: Không tìm thấy email của bạn. Hãy thử đăng nhập lại.";
-
-    String targetEmail = email.toLowerCase().trim();
-    if (targetEmail == myEmail) return "Không thể tự kết bạn với chính mình!";
-
-    try {
-      final userQuery = await _db
-          .collection('users')
-          .where('email', isEqualTo: targetEmail)
-          .get();
-      if (userQuery.docs.isEmpty) {
-        return "Tài khoản không tồn tại trên hệ thống!";
-      }
-
-      final targetUid = userQuery.docs.first.id;
-      if (await hasBlockedEmail(targetUid, myEmail)) {
-        return "Người này hiện không nhận lời mời từ bạn.";
-      }
-      if (await hasBlockedEmail(currentUid, targetEmail)) {
-        return "Bạn đã chặn người này. Hãy bỏ chặn trước khi kết bạn.";
-      }
-
-      final checkExist = await _db
-          .collection('contacts')
-          .where('userId', isEqualTo: currentUid)
-          .where('email', isEqualTo: targetEmail)
-          .get();
-      if (checkExist.docs.isNotEmpty) {
-        return "Người này đã có trong danh bạ của bạn rồi!";
-      }
-
-      final checkRequest = await _db
-          .collection('friend_requests')
-          .where('from', isEqualTo: myEmail)
-          .where('to', isEqualTo: targetEmail)
-          .get();
-      if (checkRequest.docs.isNotEmpty) {
-        return "Bạn đã gửi lời mời cho người này rồi, hãy chờ họ phản hồi!";
-      }
-
-      final reverseRequest = await _db
-          .collection('friend_requests')
-          .where('from', isEqualTo: targetEmail)
-          .where('to', isEqualTo: myEmail)
-          .limit(1)
-          .get();
-      if (reverseRequest.docs.isNotEmpty) {
-        return "Người này đã gửi lời mời cho bạn rồi. Hãy vào Danh bạ để chấp nhận.";
-      }
-
-      await _db.collection('friend_requests').add({
-        'from': myEmail,
-        'to': targetEmail,
-        'fromName': AppState.currentUserName,
-        'fromAvatar': AppState.currentUserAvatar,
-        'timestamp': FieldValue.serverTimestamp(),
-      });
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi hệ thống: $e";
-    }
-  }
-
-  static Stream<QuerySnapshot> getFriendRequestsStream() {
-    String myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    return _db
-        .collection('friend_requests')
-        .where('to', isEqualTo: myEmail)
-        .snapshots();
-  }
-
-  static Future<String> checkFriendshipStatus(String otherEmail) async {
-    if (currentUid.isEmpty) return 'NONE';
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final targetEmail = otherEmail.toLowerCase().trim();
-    if (myEmail == targetEmail) return 'SELF';
-
-    // 1. Kiểm tra đã là bạn bè chưa
-    final contactSnap = await _db
-        .collection('contacts')
-        .where('userId', isEqualTo: currentUid)
-        .where('email', isEqualTo: targetEmail)
-        .get();
-    if (contactSnap.docs.isNotEmpty) return 'FRIEND';
-
-    // 2. Kiểm tra lời mời đã gửi đi chưa
-    final sentSnap = await _db
-        .collection('friend_requests')
-        .where('from', isEqualTo: myEmail)
-        .where('to', isEqualTo: targetEmail)
-        .get();
-    if (sentSnap.docs.isNotEmpty) return 'PENDING_SENT';
-
-    // 3. Kiểm tra lời mời gửi đến chưa
-    final receivedSnap = await _db
-        .collection('friend_requests')
-        .where('from', isEqualTo: targetEmail)
-        .where('to', isEqualTo: myEmail)
-        .get();
-    if (receivedSnap.docs.isNotEmpty) return 'PENDING_RECEIVED';
-
-    return 'NONE';
-  }
-
-  static Future<String> acceptFriendRequest(
-    String requestId,
-    Map<String, dynamic> requestData,
-  ) async {
-    try {
-      final fromEmail = (requestData['from'] ?? '')
-          .toString()
-          .toLowerCase()
-          .trim();
-      if (currentUid.isEmpty || fromEmail.isEmpty) return "Lỗi dữ liệu";
-
-      await _ensureContactExists(
-        userId: currentUid,
-        email: fromEmail,
-        name: (requestData['fromName'] ?? 'Bạn bè').toString(),
-        avatar: (requestData['fromAvatar'] ?? '').toString(),
-      );
-
-      final otherUserQuery = await _db
-          .collection('users')
-          .where('email', isEqualTo: fromEmail)
-          .get();
-      if (otherUserQuery.docs.isNotEmpty) {
-        final otherUid = otherUserQuery.docs.first.id;
-        await _ensureContactExists(
-          userId: otherUid,
-          email: AppState.currentUserEmail,
-          name: AppState.currentUserName,
-          avatar: AppState.currentUserAvatar,
-        );
-      }
-
-      final reverseRequests = await _db
-          .collection('friend_requests')
-          .where(
-            'from',
-            isEqualTo: AppState.currentUserEmail.toLowerCase().trim(),
-          )
-          .where('to', isEqualTo: fromEmail)
-          .get();
-      for (final doc in reverseRequests.docs) {
-        await doc.reference.delete();
-      }
-      await _db.collection('friend_requests').doc(requestId).delete();
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi khi chấp nhận kết bạn: $e";
-    }
-  }
-
-  static Future<String> rejectFriendRequest(String requestId) async {
-    try {
-      await _db.collection('friend_requests').doc(requestId).delete();
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi khi từ chối kết bạn: $e";
-    }
-  }
-
-  static Future<void> _ensureContactExists({
-    required String userId,
-    required String email,
-    required String name,
-    required String avatar,
-  }) async {
-    final existing = await _db
-        .collection('contacts')
-        .where('userId', isEqualTo: userId)
-        .where('email', isEqualTo: email.toLowerCase().trim())
-        .get();
-    if (existing.docs.isEmpty) {
-      await _db.collection('contacts').add({
-        'userId': userId,
-        'email': email.toLowerCase().trim(),
-        'name': name,
-        'avatar': avatar,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-    }
-  }
-
-  static Stream<QuerySnapshot> getContactsStream() {
-    return _db
-        .collection('contacts')
-        .where('userId', isEqualTo: currentUid)
-        .snapshots();
-  }
-
-  static Future<String> removeContact(
-    String contactDocId,
-    String contactEmail,
-  ) async {
-    if (currentUid.isEmpty) return "Lỗi: Chưa đăng nhập";
-
-    final targetEmail = contactEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-
-    try {
-      if (contactDocId.isNotEmpty) {
-        await _db.collection('contacts').doc(contactDocId).delete();
-      }
-
-      final targetUserQuery = await _db
-          .collection('users')
-          .where('email', isEqualTo: targetEmail)
-          .limit(1)
-          .get();
-      if (targetUserQuery.docs.isNotEmpty && myEmail.isNotEmpty) {
-        final targetUid = targetUserQuery.docs.first.id;
-        final reciprocal = await _db
-            .collection('contacts')
-            .where('userId', isEqualTo: targetUid)
-            .where('email', isEqualTo: myEmail)
-            .get();
-        for (final doc in reciprocal.docs) {
-          await doc.reference.delete();
-        }
-      }
-
-      await saveActivity("Xóa bạn bè", "Đã hủy kết bạn với $targetEmail");
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi hệ thống: $e";
-    }
-  }
-
-  static Future<String?> getContactDocIdByEmail(String email) async {
-    if (currentUid.isEmpty) return null;
-    try {
-      final snapshot = await _db
-          .collection('contacts')
-          .where('userId', isEqualTo: currentUid)
-          .where('email', isEqualTo: email.toLowerCase().trim())
-          .limit(1)
-          .get();
-      if (snapshot.docs.isNotEmpty) {
-        return snapshot.docs.first.id;
-      }
-      return null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  static Future<String> updateContactName(
-    String contactDocId,
-    String name,
-  ) async {
-    if (currentUid.isEmpty) return "Lỗi: Chưa đăng nhập";
-    final cleanName = name.trim();
-    if (contactDocId.isEmpty) return "Không tìm thấy liên hệ";
-    if (cleanName.isEmpty) return "Tên liên hệ không được để trống";
-
-    try {
-      await _db.collection('contacts').doc(contactDocId).update({
-        'name': cleanName,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-      await saveActivity("Sửa danh bạ", "Đã đổi tên liên hệ thành $cleanName");
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi hệ thống: $e";
-    }
-  }
-
-  static String chatIdForEmails(String a, String b) {
-    final emails = [a.toLowerCase().trim(), b.toLowerCase().trim()]..sort();
-    return '${_safeDocId(emails[0])}__${_safeDocId(emails[1])}';
-  }
+  static String chatIdForEmails(String a, String b) => ChatService.chatIdForEmails(a, b);
 
   static List<String> _cleanAttachments(List<String>? attachments) {
     if (attachments == null) return const [];
@@ -729,141 +497,21 @@ class FirebaseService {
     return fileCount == 1 ? 'Đã gửi 1 tệp' : 'Đã gửi $fileCount tệp';
   }
 
-  static Stream<QuerySnapshot> getMessagesStream(String friendEmail) {
-    final chatId = chatIdForEmails(AppState.currentUserEmail, friendEmail);
-    return _db
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .orderBy('createdAt', descending: true)
-        .snapshots();
-  }
+  static Stream<QuerySnapshot> getMessagesStream(String friendEmail) => ChatService.getMessagesStream(friendEmail);
+  static Stream<QuerySnapshot> getChatListStream() => ChatService.getChatListStream();
+  static Stream<DocumentSnapshot> getChatStream(String friendEmail) => ChatService.getChatStream(friendEmail);
 
-  static Stream<QuerySnapshot> getChatListStream() {
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    return _db
-        .collection('chats')
-        .where('participants', arrayContains: myEmail)
-        .orderBy('updatedAt', descending: true)
-        .snapshots();
-  }
-
-  static Stream<DocumentSnapshot> getChatStream(String friendEmail) {
-    final chatId = chatIdForEmails(AppState.currentUserEmail, friendEmail);
-    return _db.collection('chats').doc(chatId).snapshots();
-  }
-
-  static Future<bool> isChatPinned(String friendEmail) async {
-    if (currentUid.isEmpty) return false;
-    final targetEmail = friendEmail.toLowerCase().trim();
-    if (targetEmail.isEmpty) return false;
-
-    final chatId = chatIdForEmails(AppState.currentUserEmail, targetEmail);
-    final chatDoc = await _db.collection('chats').doc(chatId).get();
-    if (!chatDoc.exists) return false;
-    final data = chatDoc.data() ?? <String, dynamic>{};
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    return _normalizeEmailList(data['pinnedBy']).contains(myEmail);
-  }
+  static Future<bool> isChatPinned(String friendEmail) => ChatService.isChatPinned(friendEmail);
 
   static Future<String> sendMessage(
     String friendEmail,
     String text, {
     List<String>? attachments,
     Map<String, dynamic>? replyToData,
-  }) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final cleanText = text.trim();
-    final cleanAttachments = _cleanAttachments(attachments);
-    final targetEmail = friendEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+  }) => ChatService.sendMessage(friendEmail, text, attachments: attachments, replyToData: replyToData);
 
-    if (targetEmail == myEmail) {
-      return "Không thể nhắn tin cho chính mình";
-    }
-
-    if (cleanText.isEmpty && cleanAttachments.isEmpty) {
-      return "Tin nhắn không được để trống";
-    }
-
-    try {
-      if (await hasBlockedEmail(currentUid, targetEmail)) {
-        return "Bạn đã chặn người này";
-      }
-
-      final userQuery = await _db
-          .collection('users')
-          .where('email', isEqualTo: targetEmail)
-          .limit(1)
-          .get();
-      if (userQuery.docs.isNotEmpty &&
-          await hasBlockedEmail(userQuery.docs.first.id, myEmail)) {
-        return "Người này hiện không nhận tin nhắn từ bạn";
-      }
-
-      final chatId = chatIdForEmails(myEmail, targetEmail);
-      final chatRef = _db.collection('chats').doc(chatId);
-      await chatRef.set({
-        'participants': [myEmail, targetEmail],
-        'lastMessage': cleanText.isNotEmpty
-            ? cleanText
-            : _attachmentPreview(cleanAttachments),
-        'lastSender': myEmail,
-        'lastAttachmentCount': cleanAttachments.length,
-        'updatedAt': FieldValue.serverTimestamp(),
-        'unreadCount.$targetEmail': FieldValue.increment(1),
-      }, SetOptions(merge: true));
-
-      await chatRef.collection('messages').add({
-        'senderEmail': myEmail,
-        'senderName': AppState.currentUserName,
-        'text': cleanText,
-        'attachments': cleanAttachments,
-        'createdAt': FieldValue.serverTimestamp(),
-        'replyToId': (replyToData?['id'] ?? '').toString(),
-        'replyToText': (replyToData?['text'] ?? '').toString(),
-        'replyToSender': (replyToData?['senderName'] ?? '').toString(),
-        'seenBy': [myEmail],
-      });
-      return "SUCCESS";
-    } catch (e) {
-      debugPrint("Send Message Error: $e");
-      return "Lỗi khi gửi tin nhắn: ${e.toString()}";
-    }
-  }
-
-  static Future<String> editMessage(
-    String friendEmail,
-    String messageId,
-    String newText,
-  ) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final cleanText = newText.trim();
-    if (messageId.isEmpty) return "Không tìm thấy tin nhắn";
-    if (cleanText.isEmpty) return "Nội dung không được để trống";
-
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final chatId = chatIdForEmails(myEmail, friendEmail);
-    final messageRef = _db
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .doc(messageId);
-
-    final messageDoc = await messageRef.get();
-    if (!messageDoc.exists) return "Tin nhắn không tồn tại";
-    if (messageDoc.data()?['senderEmail'] != myEmail) {
-      return "Bạn không có quyền sửa tin nhắn này";
-    }
-
-    await messageRef.update({
-      'text': cleanText,
-      'isEdited': true,
-      'editedAt': FieldValue.serverTimestamp(),
-    });
-    await _refreshChatSummary(chatId);
-    return "SUCCESS";
-  }
+  static Future<String> editMessage(String friendEmail, String messageId, String newText) =>
+      ChatService.editMessage(friendEmail, messageId, newText);
 
   static Future<void> _refreshChatSummary(String chatId) async {
     final chatRef = _db.collection('chats').doc(chatId);
@@ -894,134 +542,20 @@ class FirebaseService {
     }, SetOptions(merge: true));
   }
 
-  static Future<void> _syncChatPinnedFlagForContact(
-    String friendEmail,
-    bool shouldPin,
-  ) async {
-    final targetEmail = friendEmail.toLowerCase().trim();
-    if (currentUid.isEmpty || targetEmail.isEmpty) return;
-    final contacts = await _db
-        .collection('contacts')
-        .where('userId', isEqualTo: currentUid)
-        .where('email', isEqualTo: targetEmail)
-        .get();
-    for (final doc in contacts.docs) {
-      await doc.reference.update({
-        'chatPinned': shouldPin,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-    }
-  }
+  static Future<String> toggleChatPin(String friendEmail, bool shouldPin) =>
+      ChatService.toggleChatPin(friendEmail, shouldPin);
 
-  static Future<String> toggleChatPin(
-    String friendEmail,
-    bool shouldPin,
-  ) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final targetEmail = friendEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    if (targetEmail.isEmpty) return "Không tìm thấy cuộc trò chuyện";
+  static Future<String> togglePinChatMessage(String friendEmail, String messageId, bool shouldPin) =>
+      ChatService.togglePinChatMessage(friendEmail, messageId, shouldPin);
 
-    final chatId = chatIdForEmails(myEmail, targetEmail);
-    await _db.collection('chats').doc(chatId).set({
-      'participants': [myEmail, targetEmail],
-      'pinnedBy': shouldPin
-          ? FieldValue.arrayUnion([myEmail])
-          : FieldValue.arrayRemove([myEmail]),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-    await _syncChatPinnedFlagForContact(targetEmail, shouldPin);
-    await saveActivity(
-      shouldPin ? "Ghim cuộc trò chuyện" : "Bỏ ghim cuộc trò chuyện",
-      shouldPin
-          ? "Đã ghim cuộc trò chuyện với $targetEmail"
-          : "Đã bỏ ghim cuộc trò chuyện với $targetEmail",
-    );
-    return "SUCCESS";
-  }
+  static Future<String> pinChatMessage(String friendEmail, String messageId, String text, String senderName) =>
+      ChatService.togglePinChatMessage(friendEmail, messageId, true);
 
-  static Future<String> togglePinChatMessage(
-    String friendEmail,
-    String messageId,
-    bool shouldPin,
-  ) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final targetEmail = friendEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final chatId = chatIdForEmails(myEmail, targetEmail);
+  static Future<String> unpinChatMessage(String friendEmail, [String? messageId]) =>
+      ChatService.togglePinChatMessage(friendEmail, messageId ?? '', false);
 
-    try {
-      await _db
-          .collection('chats')
-          .doc(chatId)
-          .collection('messages')
-          .doc(messageId)
-          .update({
-        'isPinned': shouldPin,
-        'pinnedAt': shouldPin ? FieldValue.serverTimestamp() : FieldValue.delete(),
-      });
-      return "SUCCESS";
-    } catch (e) {
-      return e.toString();
-    }
-  }
-
-  static Future<String> pinChatMessage(
-    String friendEmail,
-    String messageId,
-    String text,
-    String senderName,
-  ) async {
-    return await togglePinChatMessage(friendEmail, messageId, true);
-  }
-
-  static Future<String> unpinChatMessage(String friendEmail, [String? messageId]) async {
-    if (messageId != null) {
-      return await togglePinChatMessage(friendEmail, messageId, false);
-    }
-    // Fallback logic cho gỡ ghim kiểu cũ (nếu còn dùng)
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final targetEmail = friendEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final chatId = chatIdForEmails(myEmail, targetEmail);
-
-    try {
-      await _db.collection('chats').doc(chatId).update({
-        'pinnedMessageId': FieldValue.delete(),
-        'pinnedMessageText': FieldValue.delete(),
-        'pinnedMessageSender': FieldValue.delete(),
-        'pinnedAt': FieldValue.delete(),
-      });
-      return "SUCCESS";
-    } catch (e) {
-      return e.toString();
-    }
-  }
-
-  static Future<String> deleteChatConversation(String friendEmail) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final targetEmail = friendEmail.toLowerCase().trim();
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    if (targetEmail.isEmpty) return "Không tìm thấy cuộc trò chuyện";
-
-    final chatId = chatIdForEmails(myEmail, targetEmail);
-    final chatRef = _db.collection('chats').doc(chatId);
-    final messages = await chatRef.collection('messages').get();
-    for (final message in messages.docs) {
-      final data = message.data();
-      await _deleteStoredAttachments(
-        List<String>.from(data['attachments'] ?? const []),
-      );
-      await message.reference.delete();
-    }
-    await chatRef.delete();
-    await _syncChatPinnedFlagForContact(targetEmail, false);
-    await saveActivity(
-      "Xóa cuộc trò chuyện",
-      "Đã xóa toàn bộ đoạn chat với $targetEmail",
-    );
-    return "SUCCESS";
-  }
+  static Future<String> deleteChatConversation(String friendEmail) =>
+      ChatService.deleteChatConversation(friendEmail);
 
   static Future<String> deleteMessage(
     String friendEmail,
@@ -1038,7 +572,7 @@ class FirebaseService {
         .doc(chatId)
         .collection('messages')
         .doc(messageId);
-    
+
     if (deleteForEveryone) {
       final messageDoc = await messageRef.get();
       if (!messageDoc.exists) return "Tin nhắn không tồn tại";
@@ -1110,7 +644,10 @@ class FirebaseService {
         .snapshots();
   }
 
-  static Future<void> markGroupCommentAsSeen(String groupId, String commentId) async {
+  static Future<void> markGroupCommentAsSeen(
+    String groupId,
+    String commentId,
+  ) async {
     if (currentUid.isEmpty) return;
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final commentRef = _db
@@ -1123,18 +660,7 @@ class FirebaseService {
     });
   }
 
-  static Future<void> markMessageAsSeen(String chatId, String messageId) async {
-    if (currentUid.isEmpty) return;
-    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final messageRef = _db
-        .collection('chats')
-        .doc(chatId)
-        .collection('messages')
-        .doc(messageId);
-    await messageRef.update({
-      'seenBy': FieldValue.arrayUnion([myEmail]),
-    });
-  }
+  static Future<void> markMessageAsSeen(String chatId, String messageId) => ChatService.markMessageAsSeen(chatId, messageId);
 
   static Future<String> addGroupComment(
     String groupId,
@@ -1151,7 +677,7 @@ class FirebaseService {
     }
 
     final groupDoc = await _db.collection('groups').doc(groupId).get();
-    final members = List<String>.from(groupDoc.data()?['members'] ?? []);
+    final members = _groupMemberEmails(groupDoc.data() ?? <String, dynamic>{});
     final Map<String, dynamic> unreadUpdates = {};
     for (var m in members) {
       final email = m.toString().toLowerCase().trim();
@@ -1163,7 +689,9 @@ class FirebaseService {
     unreadUpdates['lastMessage'] = cleanText.isNotEmpty
         ? cleanText
         : _attachmentPreview(cleanAttachments);
-    unreadUpdates['lastSender'] = AppState.currentUserEmail.toLowerCase().trim();
+    unreadUpdates['lastSender'] = AppState.currentUserEmail
+        .toLowerCase()
+        .trim();
     unreadUpdates['updatedAt'] = FieldValue.serverTimestamp();
 
     await _db.collection('groups').doc(groupId).update(unreadUpdates);
@@ -1182,21 +710,47 @@ class FirebaseService {
     return "SUCCESS";
   }
 
-  static Future<String> toggleGroupCommentPin(String groupId, String commentId, bool isPinned) async {
+  static Future<String> toggleGroupCommentPin(
+    String groupId,
+    String commentId,
+    bool isPinned,
+  ) async {
+    if (currentUid.isEmpty) return "Chưa đăng nhập";
     try {
+      if (isPinned) {
+        final pinnedCount = await _db
+            .collection('groups')
+            .doc(groupId)
+            .collection('comments')
+            .where('isPinned', isEqualTo: true)
+            .get()
+            .then((s) => s.docs.length);
+
+        if (pinnedCount >= 3) {
+          return "Chỉ được ghim tối đa 3 tin nhắn";
+        }
+      }
+
       await _db
           .collection('groups')
           .doc(groupId)
           .collection('comments')
           .doc(commentId)
-          .update({'isPinned': isPinned});
+          .update({
+            'isPinned': isPinned,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
       return "SUCCESS";
     } catch (e) {
       return e.toString();
     }
   }
 
-  static Future<String> editGroupComment(String groupId, String commentId, String newText) async {
+  static Future<String> editGroupComment(
+    String groupId,
+    String commentId,
+    String newText,
+  ) async {
     if (currentUid.isEmpty) return "Chưa đăng nhập";
     if (newText.trim().isEmpty) return "Nội dung không được để trống";
     try {
@@ -1206,10 +760,10 @@ class FirebaseService {
           .collection('comments')
           .doc(commentId)
           .update({
-        'text': newText.trim(),
-        'isEdited': true,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+            'text': newText.trim(),
+            'isEdited': true,
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
       return "SUCCESS";
     } catch (e) {
       return e.toString();
@@ -1244,7 +798,8 @@ class FirebaseService {
 
       if (deleteForEveryone) {
         final canDeleteEveryone =
-            ownerEmail == myEmail || await canCurrentUserManageGroupTasks(groupId);
+            ownerEmail == myEmail ||
+            await canCurrentUserManageGroupTasks(groupId);
         if (!canDeleteEveryone) {
           return "Bạn không có quyền xóa tin nhắn này với mọi người";
         }
@@ -1253,7 +808,7 @@ class FirebaseService {
         // Để giữ metadata và hiển thị thông báo "ai đã xóa" giống Zalo
         final currentUserDoc = await FirebaseFirestore.instance
             .collection('users')
-            .doc(AppState.currentUserEmail)
+            .doc(currentUid)
             .get();
         final currentUserName = currentUserDoc.data()?['name'] ?? myEmail;
 
@@ -1286,40 +841,11 @@ class FirebaseService {
     }
   }
 
-  static Future<String> removeUserFromGroup(String groupId, String targetEmail) async {
-    try {
-      final groupRef = FirebaseFirestore.instance.collection('groups').doc(groupId);
-      final groupDoc = await groupRef.get();
-      if (!groupDoc.exists) return "Nhóm không tồn tại";
-
-      final data = groupDoc.data() ?? {};
-      final memberEmails = List<String>.from(data['memberEmails'] ?? []);
-      final managerEmails = List<String>.from(data['managerEmails'] ?? []);
-      
-      final targetEmailLower = targetEmail.toLowerCase().trim();
-      
-      memberEmails.removeWhere((e) => e.toLowerCase().trim() == targetEmailLower);
-      managerEmails.removeWhere((e) => e.toLowerCase().trim() == targetEmailLower);
-
-      await groupRef.update({
-        'memberEmails': memberEmails,
-        'managerEmails': managerEmails,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Ghi log hệ thống
-      await groupRef.collection('comments').add({
-        'text': '$targetEmail đã bị xóa khỏi nhóm',
-        'userEmail': 'system',
-        'userName': 'Hệ thống',
-        'isSystem': true,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi khi xóa thành viên: $e";
-    }
+  static Future<String> removeUserFromGroup(
+    String groupId,
+    String targetEmail,
+  ) async {
+    return removeMemberFromGroup(groupId, targetEmail);
   }
 
   // --- 4. Phần ghi chú ---
@@ -1377,6 +903,9 @@ class FirebaseService {
         ..._notePayload(createdNote, groupId: groupId),
         'userId': currentUid,
         'date': DateTime.now().toIso8601String(),
+        'pinnedBy': _normalizeEmailList(createdNote.pinnedBy),
+        'viewedBy': [AppState.currentUserEmail.toLowerCase().trim()],
+        'hiddenBy': const <String>[],
       });
       await saveActivity(
         "Thêm ghi chú",
@@ -1571,8 +1100,9 @@ class FirebaseService {
 
       final cleanStatus = TodoStatus.normalize(status);
       final previousStatus = (todos[todoIndex]['status'] ?? '').toString();
-      final previousCompletedAt = (todos[todoIndex]['completedAt'] ?? '').toString();
-      
+      final previousCompletedAt = (todos[todoIndex]['completedAt'] ?? '')
+          .toString();
+
       todos[todoIndex]['status'] = cleanStatus;
       todos[todoIndex]['isDone'] = cleanStatus == TodoStatus.done;
       todos[todoIndex]['completedAt'] = cleanStatus == TodoStatus.done
@@ -1631,12 +1161,7 @@ class FirebaseService {
 
       final data = doc.data() ?? {};
       if (!await _canManageNoteOwnerActions(data)) {
-        // Force delete if title matches the problematic one as a last resort for the user
-        if (title.trim() == "mèo méo meo") {
-          // Allow delete
-        } else {
-          return "Bạn không có quyền xóa ghi chú này";
-        }
+        return "Bạn không có quyền xóa ghi chú này";
       }
 
       final String gId = (data['groupId'] ?? '').toString();
@@ -1759,45 +1284,49 @@ class FirebaseService {
     final Map<String, int> groupKeyMap = {};
     int nextGroupKey = 1000;
     subscriptions.add(
-      _db.collection('groups')
+      _db
+          .collection('groups')
           .where('members', arrayContains: myEmail)
           .snapshots()
           .listen((groupsSnapshot) {
-        final currentGroupIds = <String>{};
-        for (final groupDoc in groupsSnapshot.docs) {
-          final groupId = groupDoc.id;
-          currentGroupIds.add(groupId);
-          if (groupNoteSubs.containsKey(groupId)) continue;
+            final currentGroupIds = <String>{};
+            for (final groupDoc in groupsSnapshot.docs) {
+              final groupId = groupDoc.id;
+              currentGroupIds.add(groupId);
+              if (groupNoteSubs.containsKey(groupId)) continue;
 
-          // Gán key cố định cho mỗi nhóm
-          groupKeyMap[groupId] ??= nextGroupKey++;
+              // Gán key cố định cho mỗi nhóm
+              groupKeyMap[groupId] ??= nextGroupKey++;
 
-          groupNoteSubs[groupId] = _db.collection('notes')
-              .where('groupId', isEqualTo: groupId)
-              .snapshots()
-              .listen(
-            (notesSnapshot) {
-              latestResults[groupKeyMap[groupId]!] =
-                  notesSnapshot.docs.map(noteFromDocument).toList();
-              emitMerged();
-            },
-            onError: (e) {
-              debugPrint('Group notes stream error ($groupId): $e');
-            },
-          );
-        }
-        // Dọn dẹp nhóm đã rời
-        final removedGroups = groupNoteSubs.keys.toSet().difference(currentGroupIds);
-        for (final removed in removedGroups) {
-          groupNoteSubs[removed]?.cancel();
-          groupNoteSubs.remove(removed);
-          final key = groupKeyMap.remove(removed);
-          if (key != null) latestResults.remove(key);
-        }
-        emitMerged();
-      }),
+              groupNoteSubs[groupId] = _db
+                  .collection('notes')
+                  .where('groupId', isEqualTo: groupId)
+                  .snapshots()
+                  .listen(
+                    (notesSnapshot) {
+                      latestResults[groupKeyMap[groupId]!] = notesSnapshot.docs
+                          .map(noteFromDocument)
+                          .toList();
+                      emitMerged();
+                    },
+                    onError: (e) {
+                      debugPrint('Group notes stream error ($groupId): $e');
+                    },
+                  );
+            }
+            // Dọn dẹp nhóm đã rời
+            final removedGroups = groupNoteSubs.keys.toSet().difference(
+              currentGroupIds,
+            );
+            for (final removed in removedGroups) {
+              groupNoteSubs[removed]?.cancel();
+              groupNoteSubs.remove(removed);
+              final key = groupKeyMap.remove(removed);
+              if (key != null) latestResults.remove(key);
+            }
+            emitMerged();
+          }),
     );
-
 
     controller.onCancel = () {
       for (final s in subscriptions) {
@@ -1812,7 +1341,6 @@ class FirebaseService {
 
     return controller.stream;
   }
-
 
   static Stream<QuerySnapshot> getNoteInvitesStream() {
     return _db
@@ -1834,7 +1362,9 @@ class FirebaseService {
       if (!noteDoc.exists) return "Ghi chú không tồn tại";
 
       final data = noteDoc.data()!;
-      if (data['userId'] != currentUid) return "Chỉ chủ sở hữu mới được chia sẻ";
+      if (data['userId'] != currentUid) {
+        return "Chỉ chủ sở hữu mới được chia sẻ";
+      }
 
       final sharedWith = List<String>.from(data['sharedWith'] ?? []);
       if (sharedWith.contains(email)) return "Đã chia sẻ cho người này rồi";
@@ -1913,9 +1443,7 @@ class FirebaseService {
       final safeName = sanitizeFileName(fileName);
       final uniqueName =
           "${DateTime.now().millisecondsSinceEpoch}_${safeName.hashCode.abs()}_$safeName";
-      final ref = _storage.ref().child(
-        'group_avatars/$groupId/$uniqueName',
-      );
+      final ref = _storage.ref().child('group_avatars/$groupId/$uniqueName');
 
       debugPrint("Starting Group Avatar upload to: ${ref.fullPath}");
 
@@ -2022,9 +1550,7 @@ class FirebaseService {
   }
 
   static Future<void> toggleGroupNotePin(String noteId, bool shouldPin) async {
-    await _db.collection('notes').doc(noteId).update({
-      'isPinned': shouldPin,
-    });
+    await _db.collection('notes').doc(noteId).update({'isPinned': shouldPin});
   }
 
   static Future<void> markNoteAsViewed(String noteId) async {
@@ -2038,14 +1564,16 @@ class FirebaseService {
   static Future<void> markAllSharedNotesAsViewed() async {
     if (currentUid.isEmpty) return;
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    
+
     // Get all unread shared notes
-    final shared = await _db.collection('notes')
+    final shared = await _db
+        .collection('notes')
         .where('sharedWith', arrayContains: myEmail)
         .get();
-        
+
     // Get all unread assigned notes
-    final assigned = await _db.collection('notes')
+    final assigned = await _db
+        .collection('notes')
         .where('assigneeEmails', arrayContains: myEmail)
         .get();
 
@@ -2056,7 +1584,7 @@ class FirebaseService {
       final viewedBy = List<String>.from(doc.data()['viewedBy'] ?? []);
       if (!viewedBy.contains(myEmail)) {
         batch.update(doc.reference, {
-          'viewedBy': FieldValue.arrayUnion([myEmail])
+          'viewedBy': FieldValue.arrayUnion([myEmail]),
         });
         count++;
       }
@@ -2130,12 +1658,12 @@ class FirebaseService {
       final metadata = _attachmentMetadata(fileName);
       debugPrint("Starting Byte Upload to Storage: ${ref.fullPath}");
       final task = ref.putData(bytes, metadata);
-      
+
       final snapshot = await task;
       if (snapshot.state != TaskState.success) {
         throw Exception('Tải lên thất bại với trạng thái: ${snapshot.state}');
       }
-      
+
       final url = await _getDownloadUrlWithRetry(snapshot.ref);
       if (url.isEmpty) {
         throw Exception('Đã tải lên nhưng không lấy được link truy cập.');
@@ -2159,8 +1687,11 @@ class FirebaseService {
         if (i > 0) await Future.delayed(Duration(seconds: 2 + i));
         return await ref.getDownloadURL();
       } on FirebaseException catch (e) {
-        if ((e.code == 'object-not-found' || e.code == 'canceled') && i < maxRetries - 1) {
-          debugPrint("Storage: File not ready or busy (Attempt ${i + 1}), retrying...");
+        if ((e.code == 'object-not-found' || e.code == 'canceled') &&
+            i < maxRetries - 1) {
+          debugPrint(
+            "Storage: File not ready or busy (Attempt ${i + 1}), retrying...",
+          );
           continue;
         }
         debugPrint("Storage Error: [${e.code}] ${e.message}");
@@ -2203,10 +1734,14 @@ class FirebaseService {
       final code = _generateGroupCode();
       final groupRef = await _db.collection('groups').add({
         'name': cleanName,
-        'avatar': avatar ?? "https://ui-avatars.com/api/?name=$cleanName&background=random",
+        'avatar':
+            avatar ??
+            "https://ui-avatars.com/api/?name=$cleanName&background=random",
         'leaderId': currentUid,
         'leaderEmail': myEmail,
-        'leaderName': AppState.currentUserName.isNotEmpty ? AppState.currentUserName : "Trưởng nhóm",
+        'leaderName': AppState.currentUserName.isNotEmpty
+            ? AppState.currentUserName
+            : "Trưởng nhóm",
         'members': [myEmail],
         'managerEmails': [],
         'groupCode': code,
@@ -2225,7 +1760,7 @@ class FirebaseService {
         "Đã tạo nhóm: $cleanName",
         groupId: groupRef.id,
       );
-      
+
       return "SUCCESS";
     } catch (e) {
       debugPrint("Create Group Error: $e");
@@ -2342,6 +1877,15 @@ class FirebaseService {
     return "SUCCESS";
   }
 
+  static Future<bool> isGroupPinned(String groupId) async {
+    if (currentUid.isEmpty || groupId.isEmpty) return false;
+    final groupDoc = await _db.collection('groups').doc(groupId).get();
+    if (!groupDoc.exists) return false;
+    final data = groupDoc.data() ?? {};
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    return _normalizeEmailList(data['pinnedBy']).contains(myEmail);
+  }
+
   static Future<String> joinGroupByCode(String code) async {
     final cleanCode = code.toUpperCase().trim();
     if (currentUid.isEmpty) return "Chưa đăng nhập";
@@ -2358,7 +1902,7 @@ class FirebaseService {
 
       final data = groupDoc.data() ?? {};
       final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-      final members = _normalizeEmailList(data['members']);
+      final members = _groupMemberEmails(data);
       if (members.contains(myEmail)) return "Bạn đã ở trong nhóm này rồi!";
 
       final requiresApproval = data['requiresApproval'] == true;
@@ -2367,6 +1911,7 @@ class FirebaseService {
         // Tham gia trực tiếp nếu không cần duyệt
         await _db.collection('groups').doc(groupId).update({
           'members': FieldValue.arrayUnion([myEmail]),
+          'updatedAt': FieldValue.serverTimestamp(),
         });
         await addGroupSystemMessage(
           groupId,
@@ -2428,7 +1973,9 @@ class FirebaseService {
         final userEmail = data['userEmail'];
         final groupDoc = await _db.collection('groups').doc(groupId).get();
         if (groupDoc.exists) {
-          final members = _normalizeEmailList(groupDoc.data()?['members']);
+          final members = _groupMemberEmails(
+            groupDoc.data() ?? <String, dynamic>{},
+          );
           if (members.contains(userEmail.toString().toLowerCase().trim())) {
             await requestRef.update({'status': 'approved'});
             return "SUCCESS"; // Already in group, just clean up request
@@ -2437,6 +1984,7 @@ class FirebaseService {
 
         await _db.collection('groups').doc(groupId).update({
           'members': FieldValue.arrayUnion([userEmail]),
+          'updatedAt': FieldValue.serverTimestamp(),
         });
         await addGroupSystemMessage(
           groupId,
@@ -2501,82 +2049,161 @@ class FirebaseService {
         );
   }
 
+  static List<String> _uniqueNormalizedEmails(List<String> emails) {
+    final normalizedEmails = <String>[];
+    final seenEmails = <String>{};
+    for (final email in emails) {
+      final normalized = email.toLowerCase().trim();
+      if (normalized.isEmpty || !seenEmails.add(normalized)) continue;
+      normalizedEmails.add(normalized);
+    }
+    return normalizedEmails;
+  }
 
-  static Stream<List<Map<String, dynamic>>> getGroupMembersStream(String groupId) {
-    if (groupId.isEmpty) return Stream.value([]);
-    
-    return _db.collection('groups').doc(groupId).snapshots().asyncExpand((groupDoc) {
-      if (!groupDoc.exists) return Stream.value([]);
-      
-      final members = _normalizeEmailList(groupDoc.data()?['members']);
-      if (members.isEmpty) return Stream.value([]);
+  static bool _sameStringList(List<String> first, List<String> second) {
+    if (first.length != second.length) return false;
+    for (var i = 0; i < first.length; i++) {
+      if (first[i] != second[i]) return false;
+    }
+    return true;
+  }
 
-      // Firestore whereIn supports up to 30 items
+  static Stream<List<Map<String, dynamic>>> _groupUsersStream(
+    String groupId, {
+    bool onlineOnly = false,
+  }) {
+    late final StreamController<List<Map<String, dynamic>>> controller;
+    StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
+    groupSubscription;
+    final subscriptions =
+        <StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>[];
+    var normalizedEmails = <String>[];
+    var latestChunks = <List<Map<String, dynamic>>>[];
+
+    Future<void> cancelUserSubscriptions() async {
+      for (final subscription in subscriptions) {
+        await subscription.cancel();
+      }
+      subscriptions.clear();
+    }
+
+    void emitUsers() {
+      final usersByEmail = <String, Map<String, dynamic>>{};
+      final onlineCutoff = DateTime.now().subtract(const Duration(minutes: 5));
+
+      for (final chunk in latestChunks) {
+        for (final user in chunk) {
+          if (onlineOnly && !_isRecentlyOnline(user, onlineCutoff)) continue;
+
+          final email = (user['email'] ?? '').toString().toLowerCase().trim();
+          if (email.isEmpty) continue;
+          usersByEmail[email] = user;
+        }
+      }
+
+      controller.add([
+        for (final email in normalizedEmails)
+          if (usersByEmail[email] != null) usersByEmail[email]!,
+      ]);
+    }
+
+    Future<void> listenToEmails(List<String> emails) async {
+      final nextEmails = _uniqueNormalizedEmails(emails);
+      if (_sameStringList(normalizedEmails, nextEmails)) return;
+
+      await cancelUserSubscriptions();
+      normalizedEmails = nextEmails;
+
+      if (normalizedEmails.isEmpty) {
+        latestChunks = const <List<Map<String, dynamic>>>[];
+        controller.add(const <Map<String, dynamic>>[]);
+        return;
+      }
+
       final chunks = <List<String>>[];
-      for (var i = 0; i < members.length; i += 30) {
-        chunks.add(members.sublist(i, i + 30 > members.length ? members.length : i + 30));
+      for (var i = 0; i < normalizedEmails.length; i += 30) {
+        final end = min(i + 30, normalizedEmails.length);
+        chunks.add(normalizedEmails.sublist(i, end));
       }
+      latestChunks = List<List<Map<String, dynamic>>>.filled(
+        chunks.length,
+        const <Map<String, dynamic>>[],
+      );
 
-      if (chunks.length == 1) {
-        return _db.collection('users')
-            .where('email', whereIn: chunks[0])
+      for (var index = 0; index < chunks.length; index++) {
+        final chunkIndex = index;
+        final subscription = _db
+            .collection('users')
+            .where('email', whereIn: chunks[chunkIndex])
             .snapshots()
-            .map((snap) => snap.docs.map((doc) {
-              final data = doc.data();
-              data['uid'] = doc.id;
-              return data;
-            }).toList());
+            .listen((snapshot) {
+              latestChunks[chunkIndex] = snapshot.docs.map((doc) {
+                final data = Map<String, dynamic>.from(doc.data());
+                data['uid'] = doc.id;
+                return data;
+              }).toList();
+              emitUsers();
+            }, onError: controller.addError);
+        subscriptions.add(subscription);
       }
+    }
 
-      // We use rxdart combineLatest for multiple chunks if needed
-      // If Rx isn't available, we'll use a simpler merge
-      return _db.collection('users')
-          .where('email', whereIn: chunks[0])
-          .snapshots()
-          .map((snap) => snap.docs.map((doc) {
-            final data = doc.data();
-            data['uid'] = doc.id;
-            return data;
-          }).toList());
-    });
+    controller = StreamController<List<Map<String, dynamic>>>(
+      onListen: () {
+        groupSubscription = _db
+            .collection('groups')
+            .doc(groupId)
+            .snapshots()
+            .listen((groupDoc) async {
+              try {
+                if (!groupDoc.exists) {
+                  await listenToEmails(const <String>[]);
+                  return;
+                }
+
+                await listenToEmails(
+                  _groupMemberEmails(groupDoc.data() ?? <String, dynamic>{}),
+                );
+              } catch (error, stackTrace) {
+                controller.addError(error, stackTrace);
+              }
+            }, onError: controller.addError);
+      },
+      onCancel: () async {
+        await groupSubscription?.cancel();
+        await cancelUserSubscriptions();
+      },
+    );
+
+    return controller.stream;
+  }
+
+  static bool _isRecentlyOnline(
+    Map<String, dynamic> userData,
+    DateTime cutoff,
+  ) {
+    if (userData['isOnline'] != true) return false;
+
+    final lastActive = userData['lastActive'];
+    if (lastActive is Timestamp) {
+      return lastActive.toDate().isAfter(cutoff);
+    }
+    return true;
+  }
+
+  static Stream<List<Map<String, dynamic>>> getGroupMembersStream(
+    String groupId,
+  ) {
+    if (groupId.isEmpty) return Stream.value([]);
+    return _groupUsersStream(groupId);
   }
 
   static Stream<List<Map<String, dynamic>>> getOnlineGroupMembersStream(
     String groupId,
   ) {
     if (groupId.isEmpty) return Stream.value([]);
-    
-    return _db.collection('groups').doc(groupId).snapshots().asyncExpand((groupDoc) {
-      if (!groupDoc.exists) return Stream.value([]);
-      
-      final members = _normalizeEmailList(groupDoc.data()?['members']);
-      if (members.isEmpty) return Stream.value([]);
-
-      return _db.collection('users')
-          .where('email', whereIn: members)
-          .snapshots()
-          .map((usersSnap) {
-            final fiveMinutesAgo = DateTime.now().subtract(const Duration(minutes: 5));
-            return usersSnap.docs
-                .where((doc) {
-                  final userData = doc.data();
-                  final isOnline = userData['isOnline'] == true;
-                  final lastActive = userData['lastActive'];
-                  
-                  if (isOnline) {
-                    if (lastActive is Timestamp) {
-                      return lastActive.toDate().isAfter(fiveMinutesAgo);
-                    }
-                    return true; 
-                  }
-                  return false;
-                })
-                .map((doc) => doc.data())
-                .toList();
-          });
-    });
+    return _groupUsersStream(groupId, onlineOnly: true);
   }
-
 
   static Future<String> toggleGroupApprovalRequirement(
     String groupId,
@@ -2628,7 +2255,7 @@ class FirebaseService {
 
       if (email == myEmail) return "Bạn không thể mời chính mình vào nhóm";
 
-      final members = _normalizeEmailList(data['members']);
+      final members = _groupMemberEmails(data);
       if (members.contains(email)) return "Người này đã có trong nhóm";
 
       final existing = await _db
@@ -2681,7 +2308,9 @@ class FirebaseService {
         final groupId = data['groupId'];
         final groupDoc = await _db.collection('groups').doc(groupId).get();
         if (groupDoc.exists) {
-          final members = _normalizeEmailList(groupDoc.data()?['members']);
+          final members = _groupMemberEmails(
+            groupDoc.data() ?? <String, dynamic>{},
+          );
           if (members.contains(myEmail)) {
             await inviteRef.update({'status': 'accepted'});
             return "SUCCESS"; // Already in group
@@ -2690,6 +2319,7 @@ class FirebaseService {
 
         await _db.collection('groups').doc(groupId).update({
           'members': FieldValue.arrayUnion([myEmail]),
+          'updatedAt': FieldValue.serverTimestamp(),
         });
         await addGroupSystemMessage(
           groupId,
@@ -2773,8 +2403,10 @@ class FirebaseService {
         return "Chỉ trưởng nhóm mới được đổi quyền thành viên";
       }
 
-      final members = _normalizeEmailList(data['members']);
-      if (!members.contains(email)) return "Thành viên này không còn trong nhóm";
+      final members = _groupMemberEmails(data);
+      if (!members.contains(email)) {
+        return "Thành viên này không còn trong nhóm";
+      }
       if (email == AppState.currentUserEmail.toLowerCase().trim()) {
         return "Trưởng nhóm đã có key vàng mặc định";
       }
@@ -2856,7 +2488,7 @@ class FirebaseService {
 
       // Delete Group itself
       await _db.collection('groups').doc(groupId).delete();
-      
+
       await saveActivity(
         "Xóa nhóm",
         "Đã giải tán nhóm ${data['name'] ?? ''}",
@@ -2892,7 +2524,7 @@ class FirebaseService {
     final groupDoc = await _db.collection('groups').doc(groupId).get();
     if (!groupDoc.exists) return const [];
     final data = groupDoc.data() as Map<String, dynamic>;
-    return List<String>.from(data['members'] ?? const []);
+    return _groupMemberEmails(data);
   }
 
   static Future<List<Note>> getGroupNotesOnce(String groupId) async {
@@ -3023,14 +2655,16 @@ class FirebaseService {
   }) async {
     if (currentUid.isEmpty) return "Chưa đăng nhập";
     try {
-      if (type == 'user' && targetId.toLowerCase().trim() == AppState.currentUserEmail.toLowerCase().trim()) {
+      if (type == 'user' &&
+          targetId.toLowerCase().trim() ==
+              AppState.currentUserEmail.toLowerCase().trim()) {
         return "Không thể tự chặn chính mình";
       }
       final blockRef = _db
           .collection('users')
           .doc(currentUid)
           .collection('blocks')
-          .doc(targetId);
+          .doc(targetId.toLowerCase().trim());
 
       if (shouldBlock) {
         await blockRef.set({
@@ -3073,10 +2707,19 @@ class FirebaseService {
 
   static Future<bool> hasBlockedEmail(String uid, String email) async {
     if (uid.isEmpty || email.isEmpty) return false;
-    final doc = await _db.collection('users').doc(uid).get();
-    if (!doc.exists) return false;
-    final blocked = List<String>.from(doc.data()?['blockedEmails'] ?? []);
-    return blocked.contains(email.toLowerCase().trim());
+    final targetEmail = email.toLowerCase().trim();
+    final doc = await _db
+        .collection('users')
+        .doc(uid)
+        .collection('blocks')
+        .doc(targetEmail)
+        .get();
+    if (doc.exists) return true;
+
+    final legacyDoc = await _db.collection('users').doc(uid).get();
+    if (!legacyDoc.exists) return false;
+    final blocked = List<String>.from(legacyDoc.data()?['blockedEmails'] ?? []);
+    return blocked.contains(targetEmail);
   }
 
   // --- Admin Methods ---
@@ -3125,7 +2768,7 @@ class FirebaseService {
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final chatId = chatIdForEmails(myEmail, friendEmail);
     await _db.collection('chats').doc(chatId).set({
-      'unreadCount': {myEmail: 0}
+      'unreadCount': {myEmail: 0},
     }, SetOptions(merge: true));
   }
 
@@ -3133,7 +2776,7 @@ class FirebaseService {
     if (currentUid.isEmpty) return;
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     await _db.collection('groups').doc(groupId).set({
-      'unreadCount': {myEmail: 0}
+      'unreadCount': {myEmail: 0},
     }, SetOptions(merge: true));
   }
 
@@ -3153,17 +2796,34 @@ class FirebaseService {
 
     void emitTotal() {
       if (!controller.isClosed) {
-        controller.add(countInvites + countGroups + countGroupReqs + countFriends);
+        controller.add(
+          countInvites + countGroups + countGroupReqs + countFriends,
+        );
       }
     }
 
-    final sub1 = noteInvites.listen((s) { countInvites = s.docs.length; emitTotal(); });
-    final sub2 = groupInvites.listen((s) { countGroups = s.docs.length; emitTotal(); });
-    final sub3 = groupRequests.listen((s) { countGroupReqs = s.docs.length; emitTotal(); });
-    final sub4 = friendRequests.listen((s) { countFriends = s.docs.length; emitTotal(); });
+    final sub1 = noteInvites.listen((s) {
+      countInvites = s.docs.length;
+      emitTotal();
+    });
+    final sub2 = groupInvites.listen((s) {
+      countGroups = s.docs.length;
+      emitTotal();
+    });
+    final sub3 = groupRequests.listen((s) {
+      countGroupReqs = s.docs.length;
+      emitTotal();
+    });
+    final sub4 = friendRequests.listen((s) {
+      countFriends = s.docs.length;
+      emitTotal();
+    });
 
     controller.onCancel = () {
-      sub1.cancel(); sub2.cancel(); sub3.cancel(); sub4.cancel();
+      sub1.cancel();
+      sub2.cancel();
+      sub3.cancel();
+      sub4.cancel();
       controller.close();
     };
     return controller.stream;
@@ -3192,9 +2852,13 @@ class FirebaseService {
       int total = 0;
       chatUnreads.forEach((chatId, countData) {
         final participants = countData['participants'] as List<String>;
-        final friendEmail = participants.firstWhere((e) => e != myEmail, orElse: () => '');
+        final friendEmail = participants.firstWhere(
+          (e) => e != myEmail,
+          orElse: () => '',
+        );
         if (friendEmail.isNotEmpty && !mutedIds.contains(friendEmail)) {
-          total += 1; // Count each conversation as 1, regardless of message count
+          total +=
+              1; // Count each conversation as 1, regardless of message count
         }
       });
       controller.add(total);
@@ -3221,9 +2885,13 @@ class FirebaseService {
         final data = doc.data();
         final until = data['muteUntil'];
         bool isActive = true;
-        if (until is Timestamp) isActive = until.toDate().isAfter(DateTime.now());
+        if (until is Timestamp) {
+          isActive = until.toDate().isAfter(DateTime.now());
+        }
         if (isActive) {
-          mutedIds.add((data['targetId'] ?? '').toString().toLowerCase().trim());
+          mutedIds.add(
+            (data['targetId'] ?? '').toString().toLowerCase().trim(),
+          );
         }
       }
       emitTotal();
@@ -3281,9 +2949,13 @@ class FirebaseService {
         final data = doc.data();
         final until = data['muteUntil'];
         bool isActive = true;
-        if (until is Timestamp) isActive = until.toDate().isAfter(DateTime.now());
+        if (until is Timestamp) {
+          isActive = until.toDate().isAfter(DateTime.now());
+        }
         if (isActive) {
-          mutedIds.add((data['targetId'] ?? '').toString().toLowerCase().trim());
+          mutedIds.add(
+            (data['targetId'] ?? '').toString().toLowerCase().trim(),
+          );
         }
       }
       emitTotal();
@@ -3300,12 +2972,12 @@ class FirebaseService {
   /// Luồng đếm tin nhắn chưa đọc (chat cá nhân & nhóm) - Dùng cho biểu tượng MENU (3 gạch).
   static Stream<int> unreadSharedNotesCountStream() {
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    
+
     final sharedStream = _db
         .collection('notes')
         .where('sharedWith', arrayContains: myEmail)
         .snapshots();
-        
+
     final assignedStream = _db
         .collection('notes')
         .where('assigneeEmails', arrayContains: myEmail)
@@ -3318,8 +2990,12 @@ class FirebaseService {
     void emitTotal() {
       if (controller.isClosed) return;
       final allUnreadIds = <String>{};
-      sharedUnreads.forEach((id, isUnread) { if (isUnread) allUnreadIds.add(id); });
-      assignedUnreads.forEach((id, isUnread) { if (isUnread) allUnreadIds.add(id); });
+      sharedUnreads.forEach((id, isUnread) {
+        if (isUnread) allUnreadIds.add(id);
+      });
+      assignedUnreads.forEach((id, isUnread) {
+        if (isUnread) allUnreadIds.add(id);
+      });
       controller.add(allUnreadIds.length);
     }
 
@@ -3368,12 +3044,23 @@ class FirebaseService {
     int sharedCount = 0;
 
     void emit() {
-      if (!controller.isClosed) controller.add(chatCount + groupCount + sharedCount);
+      if (!controller.isClosed) {
+        controller.add(chatCount + groupCount + sharedCount);
+      }
     }
 
-    final s1 = chatStream.listen((c) { chatCount = c; emit(); });
-    final s2 = groupStream.listen((g) { groupCount = g; emit(); });
-    final s3 = sharedNotesStream.listen((s) { sharedCount = s; emit(); });
+    final s1 = chatStream.listen((c) {
+      chatCount = c;
+      emit();
+    });
+    final s2 = groupStream.listen((g) {
+      groupCount = g;
+      emit();
+    });
+    final s3 = sharedNotesStream.listen((s) {
+      sharedCount = s;
+      emit();
+    });
 
     controller.onCancel = () {
       s1.cancel();
@@ -3384,28 +3071,6 @@ class FirebaseService {
     return controller.stream;
   }
 
-
-  static Future<String> togglePinGroupComment(
-    String groupId,
-    String commentId,
-    bool shouldPin,
-  ) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    try {
-      await _db
-          .collection('groups')
-          .doc(groupId)
-          .collection('comments')
-          .doc(commentId)
-          .update({
-            'isPinned': shouldPin,
-            'updatedAt': FieldValue.serverTimestamp(),
-          });
-      return "SUCCESS";
-    } catch (e) {
-      return e.toString();
-    }
-  }
 
   static Future<Map<String, int>> getReLoginSummary() async {
     if (currentUid.isEmpty) return {};
@@ -3428,7 +3093,10 @@ class FirebaseService {
             if (until is Timestamp) return until.toDate().isAfter(now);
             return true;
           })
-          .map((doc) => (doc.data()['targetId'] ?? '').toString().toLowerCase().trim())
+          .map(
+            (doc) =>
+                (doc.data()['targetId'] ?? '').toString().toLowerCase().trim(),
+          )
           .toSet();
 
       // 2. Unread Messages (Private)
@@ -3551,5 +3219,3 @@ class FirebaseService {
     }
   }
 }
-
-

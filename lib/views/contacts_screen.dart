@@ -442,7 +442,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                 children: [
                   Container(
                     width: double.infinity,
-                    color: Colors.orange.shade50,
+                    color: colorScheme.secondaryContainer.withValues(alpha: 0.7),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 8,
@@ -450,7 +450,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                     child: Text(
                       'Lời mời kết bạn (${requests.length})',
                       style: TextStyle(
-                        color: Colors.orange.shade900,
+                        color: colorScheme.onSecondaryContainer,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -465,7 +465,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       String reqId = requests[index].id;
 
                       return ListTile(
-                        tileColor: Colors.orange.shade50.withValues(alpha: 0.5),
+                        tileColor: colorScheme.secondaryContainer.withValues(alpha: 0.3),
                         leading: CircleAvatar(
                           backgroundImage: avatarImageProvider(
                             reqData['fromAvatar']?.toString(),
@@ -621,9 +621,24 @@ class _ContactsScreenState extends State<ContactsScreen> {
                           leading: Stack(
                             children: [
                               CircleAvatar(
+                                backgroundColor: Colors.transparent,
                                 backgroundImage: avatarImageProvider(
                                   contact['avatar']?.toString(),
                                   name: name.toString(),
+                                ),
+                              ),
+                              Positioned.fill(
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(20),
+                                    onTap: () {
+                                      final avatar = contact['avatar']?.toString() ?? '';
+                                      if (avatar.isNotEmpty) {
+                                        _showFullScreenImage(avatar, name.toString());
+                                      }
+                                    },
+                                  ),
                                 ),
                               ),
                               StreamBuilder<DocumentSnapshot?>(
@@ -875,6 +890,36 @@ class _ContactsScreenState extends State<ContactsScreen> {
     if (diff.inDays == 1) return 'Truy cập hôm qua';
     if (diff.inDays < 7) return 'Truy cập ${diff.inDays} ngày trước';
     return 'Truy cập ngày ${lastSeen.day}/${lastSeen.month}/${lastSeen.year}';
+  }
+
+  void _showFullScreenImage(String imageUrl, String name) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          backgroundColor: Colors.black,
+          appBar: AppBar(
+            backgroundColor: Colors.black,
+            iconTheme: const IconThemeData(color: Colors.white),
+            title: Text(name, style: const TextStyle(color: Colors.white)),
+          ),
+          body: Center(
+            child: InteractiveViewer(
+              child: Image.network(
+                imageUrl,
+                fit: BoxFit.contain,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) return child;
+                  return const Center(child: CircularProgressIndicator(color: Colors.white));
+                },
+                errorBuilder: (context, error, stackTrace) =>
+                    const Icon(Icons.error, color: Colors.white, size: 50),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

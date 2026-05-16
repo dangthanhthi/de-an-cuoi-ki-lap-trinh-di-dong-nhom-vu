@@ -3,6 +3,7 @@ import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
 import 'app_state.dart';
+import '../models/app_models.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _notificationsPlugin =
@@ -101,6 +102,15 @@ class NotificationService {
       title: title,
       body: body,
       scheduledTime: scheduledTime,
+    );
+  }
+
+  static Future<void> scheduleNoteReminder(String noteId, Note note) async {
+    await syncNoteReminder(
+      noteId: noteId,
+      title: "Nhắc nhở: ${note.title}",
+      body: note.content.isEmpty ? "Đến giờ ghi chú rồi!" : note.content,
+      scheduledTime: note.reminderTime,
     );
   }
 

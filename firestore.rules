@@ -14,76 +14,79 @@ service cloud.firestore {
       return request.auth.token.email;
     }
 
-    function userDoc(uid) {
-      return get(/databases/$(database)/documents/users/$(uid));
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
     }
 
     function userExists(uid) {
-      return exists(/databases/$(database)/documents/users/$(uid));
+      return exists(userPath(uid));
     }
 
-    function myUserExists() {
-      return signedIn() && userExists(currentUid());
+    function userDoc(uid) {
+      return get(userPath(uid));
     }
 
     function isAdmin() {
-      return myUserExists() && userDoc(currentUid()).data.role == 'Admin';
+      return signedIn()
+          && userExists(currentUid())
+          && userDoc(currentUid()).data.role == 'Admin';
     }
 
-    function myProfileMatches(name, avatar) {
-      return myUserExists()
-          && userDoc(currentUid()).data.name == name
-          && userDoc(currentUid()).data.avatar == avatar;
-    }
-
-    function groupDoc(groupId) {
-      return get(/databases/$(database)/documents/groups/$(groupId));
+    function groupPath(groupId) {
+      return /databases/$(database)/documents/groups/$(groupId);
     }
 
     function groupExists(groupId) {
-      return exists(/databases/$(database)/documents/groups/$(groupId));
+      return groupId is string
+          && groupId != ''
+          && exists(groupPath(groupId));
+    }
+
+    function groupDoc(groupId) {
+      return get(groupPath(groupId));
+    }
+
+    function hasListValue(data, key, value) {
+      return data.keys().hasAny([key])
+          && data[key] is list
+          && value in data[key];
     }
 
     function isGroupMember(groupId) {
       return signedIn()
-          && groupId is string
-          && groupId != ''
           && groupExists(groupId)
-          && currentEmail() in groupDoc(groupId).data.members;
+          && (
+            hasListValue(groupDoc(groupId).data, 'members', currentEmail())
+            || hasListValue(groupDoc(groupId).data, 'memberEmails', currentEmail())
+          );
     }
 
     function isGroupLeader(groupId) {
       return signedIn()
-          && groupId is string
-          && groupId != ''
           && groupExists(groupId)
           && groupDoc(groupId).data.leaderId == currentUid();
     }
 
-    function chatDoc(chatId) {
-      return get(/databases/$(database)/documents/chats/$(chatId));
-    }
-
-    function chatExists(chatId) {
-      return exists(/databases/$(database)/documents/chats/$(chatId));
-    }
-
-    function isChatParticipant(data) {
-      return signedIn() && currentEmail() in data.participants;
-    }
-
-    function isChatParticipantById(chatId) {
+    function isGroupManager(groupId) {
       return signedIn()
-          && chatExists(chatId)
-          && currentEmail() in chatDoc(chatId).data.participants;
+          && groupExists(groupId)
+          && hasListValue(groupDoc(groupId).data, 'managerEmails', currentEmail());
     }
 
-    function noteDoc(noteId) {
-      return get(/databases/$(database)/documents/notes/$(noteId));
+    function canManageGroup(groupId) {
+      return isAdmin() || isGroupLeader(groupId) || isGroupManager(groupId);
+    }
+
+    function notePath(noteId) {
+      return /databases/$(database)/documents/notes/$(noteId);
     }
 
     function noteExists(noteId) {
-      return exists(/databases/$(database)/documents/notes/$(noteId));
+      return exists(notePath(noteId));
+    }
+
+    function noteDoc(noteId) {
+      return get(notePath(noteId));
     }
 
     function isNoteOwner(data) {
@@ -101,16 +104,18 @@ service cloud.firestore {
     function canReadNote(data) {
       return signedIn()
           && (
-            isNoteOwner(data)
+            isAdmin()
+            || isNoteOwner(data)
             || isSharedNoteViewer(data)
             || (isGroupNote(data) && isGroupMember(data.groupId))
           );
     }
 
-    function canEditNote(data) {
+    function canEditNoteContent(data) {
       return signedIn()
           && (
-            isNoteOwner(data)
+            isAdmin()
+            || isNoteOwner(data)
             || (isGroupNote(data) && isGroupMember(data.groupId))
           );
     }
@@ -118,49 +123,32 @@ service cloud.firestore {
     function canManageNote(data) {
       return signedIn()
           && (
-            isNoteOwner(data)
-            || (isGroupNote(data) && isGroupLeader(data.groupId))
+            isAdmin()
+            || isNoteOwner(data)
+            || (isGroupNote(data) && canManageGroup(data.groupId))
           );
     }
 
-    function validUserCreate(userId) {
-      return signedIn()
-          && userId == currentUid()
-          && request.resource.data.keys().hasAll(['name', 'email', 'avatar', 'role'])
-          && request.resource.data.keys().hasOnly([
-            'name',
-            'email',
-            'avatar',
-            'role',
-            'lastUpdated',
-            'settings',
-            'updatedAt',
-          ])
-          && request.resource.data.email == currentEmail()
-          && request.resource.data.role == 'User';
-    }
-
-    function validOwnUserUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+    function ownUserUpdate() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
       return request.resource.data.email == resource.data.email
-          && request.resource.data.email == currentEmail()
           && request.resource.data.role == resource.data.role
           && request.resource.data.isBanned == resource.data.isBanned
           && request.resource.data.isDeleted == resource.data.isDeleted
-          && changedKeys.hasOnly([
+          && changed.hasOnly([
             'name',
             'avatar',
             'settings',
-            'lastUpdated',
+            'isOnline',
+            'lastActive',
             'updatedAt',
           ]);
     }
 
-    function validAdminUserUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+    function adminUserUpdate() {
       return isAdmin()
           && request.resource.data.email == resource.data.email
-          && changedKeys.hasOnly([
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'role',
             'isBanned',
             'isDeleted',
@@ -171,459 +159,170 @@ service cloud.firestore {
           ]);
     }
 
-    function validMuteWrite() {
-      return request.resource.data.keys().hasAll([
-            'userId',
-            'type',
-            'targetId',
-            'label',
-            'mutedAt',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'type',
-            'targetId',
-            'label',
-            'muteUntil',
-            'mutedAt',
-          ])
-          && request.resource.data.userId == currentUid();
-    }
-
-    function validBlockWrite() {
-      return request.resource.data.keys().hasAll([
-            'userId',
-            'userEmail',
-            'targetEmail',
-            'createdAt',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'userEmail',
-            'targetEmail',
-            'createdAt',
-          ])
-          && request.resource.data.userId == currentUid()
-          && request.resource.data.userEmail == currentEmail()
-          && request.resource.data.targetEmail != currentEmail();
-    }
-
-    function validActivityCreate() {
-      return request.resource.data.keys().hasAll([
-            'userId',
-            'action',
-            'detail',
-            'timestamp',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'action',
-            'detail',
-            'timestamp',
-          ])
-          && request.resource.data.userId == currentUid();
-    }
-
-    function validOwnContactCreate() {
-      return request.resource.data.keys().hasAll([
-            'userId',
-            'email',
-            'name',
-            'avatar',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'email',
-            'name',
-            'avatar',
-            'addedAt',
-            'updatedAt',
-          ])
-          && request.resource.data.userId == currentUid();
-    }
-
-    function validMirroredContactCreate() {
-      return request.resource.data.keys().hasAll([
-            'userId',
-            'email',
-            'name',
-            'avatar',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'userId',
-            'email',
-            'name',
-            'avatar',
-            'addedAt',
-            'updatedAt',
-          ])
+    function validUserCreate(userId) {
+      return signedIn()
+          && userId == currentUid()
           && request.resource.data.email == currentEmail()
-          && myProfileMatches(
-            request.resource.data.name,
-            request.resource.data.avatar,
+          && request.resource.data.role == 'User';
+    }
+
+    function validContactCreate() {
+      return signedIn()
+          && (
+            request.resource.data.userId == currentUid()
+            || request.resource.data.email == currentEmail()
           );
-    }
-
-    function validOwnerContactUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return request.resource.data.userId == resource.data.userId
-          && request.resource.data.email == resource.data.email
-          && changedKeys.hasOnly(['name', 'avatar', 'updatedAt']);
-    }
-
-    function validMirroredContactUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return request.resource.data.userId == resource.data.userId
-          && request.resource.data.email == resource.data.email
-          && request.resource.data.email == currentEmail()
-          && myProfileMatches(
-            request.resource.data.name,
-            request.resource.data.avatar,
-          )
-          && changedKeys.hasOnly(['name', 'avatar', 'updatedAt']);
     }
 
     function validFriendRequestCreate() {
-      return request.resource.data.keys().hasAll([
-            'from',
-            'to',
-            'fromName',
-            'fromAvatar',
-            'timestamp',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'from',
-            'to',
-            'fromName',
-            'fromAvatar',
-            'timestamp',
-          ])
+      return signedIn()
           && request.resource.data.from == currentEmail()
-          && request.resource.data.to != currentEmail()
-          && myProfileMatches(
-            request.resource.data.fromName,
-            request.resource.data.fromAvatar,
-          );
+          && request.resource.data.to != currentEmail();
     }
 
-    function validFriendRequestSenderUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return resource.data.from == currentEmail()
-          && request.resource.data.from == resource.data.from
-          && request.resource.data.to == resource.data.to
-          && myProfileMatches(
-            request.resource.data.fromName,
-            request.resource.data.fromAvatar,
-          )
-          && changedKeys.hasOnly(['fromName', 'fromAvatar']);
+    function validChatData(data) {
+      return signedIn()
+          && data.participants is list
+          && data.participants.size() == 2
+          && currentEmail() in data.participants;
     }
 
-    function validChatCreate() {
-      return request.resource.data.keys().hasAll([
-            'participants',
-            'lastMessage',
-            'lastSender',
-            'lastAttachmentCount',
-            'updatedAt',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'participants',
-            'lastMessage',
-            'lastSender',
-            'lastAttachmentCount',
-            'updatedAt',
-          ])
-          && request.resource.data.participants.size() == 2
-          && request.resource.data.participants.hasAll([currentEmail()])
-          && request.resource.data.lastSender == currentEmail();
+    function isChatParticipant(data) {
+      return signedIn()
+          && data.participants is list
+          && currentEmail() in data.participants;
     }
 
-    function validChatUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return isChatParticipant(resource.data)
-          && request.resource.data.participants == resource.data.participants
-          && request.resource.data.lastSender == currentEmail()
-          && changedKeys.hasOnly([
-            'lastMessage',
-            'lastSender',
-            'lastAttachmentCount',
-            'updatedAt',
-          ]);
+    function chatPath(chatId) {
+      return /databases/$(database)/documents/chats/$(chatId);
     }
 
-    function validMessageCreate() {
-      return request.resource.data.keys().hasAll([
-            'senderEmail',
-            'senderName',
-            'text',
-            'attachments',
-            'createdAt',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'senderEmail',
-            'senderName',
-            'text',
-            'attachments',
-            'createdAt',
-          ])
-          && request.resource.data.senderEmail == currentEmail();
+    function isChatParticipantById(chatId) {
+      return exists(chatPath(chatId))
+          && isChatParticipant(get(chatPath(chatId)).data);
     }
 
     function validNoteCreate() {
-      return request.resource.data.keys().hasAll([
-            'title',
-            'content',
-            'label',
-            'isTodo',
-            'todos',
-            'sharedWith',
-            'color',
-            'groupId',
-            'createdByEmail',
-            'createdByName',
-            'isPinned',
-            'priority',
-            'hasReminder',
-            'attachments',
-            'userId',
-            'date',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'title',
-            'content',
-            'label',
-            'isTodo',
-            'todos',
-            'sharedWith',
-            'color',
-            'groupId',
-            'createdByEmail',
-            'createdByName',
-            'isPinned',
-            'priority',
-            'hasReminder',
-            'reminderTime',
-            'attachments',
-            'userId',
-            'date',
-          ])
+      return signedIn()
           && request.resource.data.userId == currentUid()
           && request.resource.data.createdByEmail == currentEmail()
-          && request.resource.data.sharedWith.size() == 0
           && (
             request.resource.data.groupId == ''
-            || (
-              isGroupMember(request.resource.data.groupId)
-              && (
-                isGroupLeader(request.resource.data.groupId)
-                || (
-                  request.resource.data.isTodo == false
-                  && request.resource.data.todos.size() == 0
-                )
-              )
-            )
+            || isGroupMember(request.resource.data.groupId)
           );
     }
 
-    function validNoteUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      let todoChanged = request.resource.data.todos != resource.data.todos
-          || request.resource.data.isTodo != resource.data.isTodo;
-      let shareChanged = request.resource.data.sharedWith != resource.data.sharedWith;
-      return canEditNote(resource.data)
-          && request.resource.data.userId == resource.data.userId
-          && request.resource.data.date == resource.data.date
-          && request.resource.data.groupId == resource.data.groupId
-          && request.resource.data.createdByEmail == resource.data.createdByEmail
-          && request.resource.data.createdByName == resource.data.createdByName
-          && request.resource.data.updatedByEmail == currentEmail()
-          && changedKeys.hasOnly([
-            'title',
-            'content',
-            'label',
-            'isTodo',
-            'todos',
+    function noteMetadataOnlyUpdate(data) {
+      return canReadNote(data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'sharedWith',
-            'color',
+            'viewedBy',
+            'hiddenBy',
+            'pinnedBy',
             'isPinned',
-            'priority',
-            'hasReminder',
-            'reminderTime',
-            'attachments',
             'updatedAt',
             'updatedByEmail',
             'updatedByName',
-          ])
-          && (!todoChanged
-              || (
-                resource.data.groupId == ''
-                ? isNoteOwner(resource.data)
-                : isGroupLeader(resource.data.groupId)
-              ))
-          && (!shareChanged || canManageNote(resource.data));
+          ]);
     }
 
-    function validNoteCommentCreate() {
-      return request.resource.data.userId == currentUid()
-          && request.resource.data.userEmail == currentEmail();
-    }
-
-    function validNoteHistoryCreate() {
-      return request.resource.data.userEmail == currentEmail();
+    function validNoteContentUpdate(data) {
+      return canEditNoteContent(data)
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.groupId == resource.data.groupId
+          && request.resource.data.createdByEmail == resource.data.createdByEmail;
     }
 
     function validGroupCreate() {
-      return request.resource.data.keys().hasAll([
-            'name',
-            'avatar',
-            'leaderId',
-            'members',
-            'pinnedBy',
-            'groupCode',
-          ])
-          && request.resource.data.keys().hasOnly([
-            'name',
-            'avatar',
-            'leaderId',
-            'members',
-            'pinnedBy',
-            'groupCode',
-            'createdAt',
-          ])
+      return signedIn()
           && request.resource.data.leaderId == currentUid()
-          && request.resource.data.members.size() == 1
-          && request.resource.data.members.hasAll([currentEmail()])
-          && request.resource.data.pinnedBy.size() == 0;
+          && hasListValue(request.resource.data, 'members', currentEmail());
     }
 
-    function validLeaderGroupUpdate(groupId) {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return isGroupLeader(groupId)
-          && request.resource.data.leaderId == resource.data.leaderId
-          && request.resource.data.groupCode == resource.data.groupCode
-          && currentEmail() in request.resource.data.members
-          && changedKeys.hasOnly([
-            'name',
-            'avatar',
+    function groupMemberSelfJoin() {
+      return signedIn()
+          && resource.data.keys().hasAny(['members'])
+          && request.resource.data.keys().hasAny(['members'])
+          && !hasListValue(resource.data, 'members', currentEmail())
+          && request.resource.data.members.hasAll(resource.data.members)
+          && hasListValue(request.resource.data, 'members', currentEmail())
+          && request.resource.data.members.size() == resource.data.members.size() + 1
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'members',
-            'pinnedBy',
             'updatedAt',
           ]);
     }
 
-    function validMemberGroupPinUpdate(groupId) {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return isGroupMember(groupId)
-          && request.resource.data.leaderId == resource.data.leaderId
-          && request.resource.data.groupCode == resource.data.groupCode
-          && request.resource.data.name == resource.data.name
-          && request.resource.data.avatar == resource.data.avatar
-          && request.resource.data.members == resource.data.members
-          && changedKeys.hasOnly(['pinnedBy', 'updatedAt']);
-    }
-
-    function validSelfGroupLeave(groupId) {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return isGroupMember(groupId)
-          && request.resource.data.leaderId == resource.data.leaderId
-          && request.resource.data.groupCode == resource.data.groupCode
-          && request.resource.data.name == resource.data.name
-          && request.resource.data.avatar == resource.data.avatar
-          && request.resource.data.pinnedBy == resource.data.pinnedBy
-          && resource.data.members.hasAll(request.resource.data.members)
-          && request.resource.data.members.size() == resource.data.members.size() - 1
-          && !(currentEmail() in request.resource.data.members)
-          && changedKeys.hasOnly(['members', 'updatedAt']);
-    }
-
-    function validGroupJoinUpdate(groupId) {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
+    function legacyGroupMembershipRepair() {
       return signedIn()
-          && !isGroupMember(groupId)
+          && hasListValue(resource.data, 'memberEmails', currentEmail())
+          && request.resource.data.keys().hasAny(['members'])
+          && request.resource.data.members.hasAll(resource.data.memberEmails)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'members',
+            'managerEmails',
+            'updatedAt',
+          ]);
+    }
+
+    function groupMemberRuntimeUpdate(groupId) {
+      return isGroupMember(groupId)
+          && request.resource.data.leaderId == resource.data.leaderId
+          && request.resource.data.members == resource.data.members
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'pinnedBy',
+            'unreadCount',
+            'lastMessage',
+            'lastSender',
+            'updatedAt',
+          ]);
+    }
+
+    function groupManagerUpdate(groupId) {
+      return canManageGroup(groupId)
           && request.resource.data.leaderId == resource.data.leaderId
           && request.resource.data.groupCode == resource.data.groupCode
-          && request.resource.data.name == resource.data.name
-          && request.resource.data.avatar == resource.data.avatar
-          && request.resource.data.pinnedBy == resource.data.pinnedBy
-          && request.resource.data.members.hasAll(resource.data.members)
-          && currentEmail() in request.resource.data.members
-          && request.resource.data.members.size() == resource.data.members.size() + 1
-          && changedKeys.hasOnly(['members', 'updatedAt']);
-    }
-
-    function validAdminGroupMembershipUpdate() {
-      let changedKeys = request.resource.data.diff(resource.data).affectedKeys();
-      return isAdmin()
-          && request.resource.data.leaderId == resource.data.leaderId
-          && request.resource.data.groupCode == resource.data.groupCode
-          && request.resource.data.name == resource.data.name
-          && request.resource.data.avatar == resource.data.avatar
-          && request.resource.data.pinnedBy == resource.data.pinnedBy
-          && changedKeys.hasOnly(['members', 'updatedAt']);
-    }
-
-    function validGroupCommentCreate() {
-      return request.resource.data.userId == currentUid()
-          && request.resource.data.userEmail == currentEmail();
-    }
-
-    function validGroupCodeCreate() {
-      return request.resource.data.keys().hasAll(['groupId', 'leaderId'])
-          && request.resource.data.keys().hasOnly([
-            'groupId',
-            'leaderId',
-            'createdAt',
-          ])
-          && request.resource.data.groupId is string
-          && request.resource.data.groupId != ''
-          && request.resource.data.leaderId == currentUid();
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name',
+            'avatar',
+            'members',
+            'managerEmails',
+            'pinnedBy',
+            'requiresApproval',
+            'unreadCount',
+            'lastMessage',
+            'lastSender',
+            'updatedAt',
+          ]);
     }
 
     match /users/{userId} {
       allow get, list: if signedIn();
       allow create: if validUserCreate(userId);
-      allow update: if (userId == currentUid() && validOwnUserUpdate())
-          || (userId != currentUid() && validAdminUserUpdate());
-      allow delete: if false;
-    }
-
-    match /notification_mutes/{muteId} {
-      allow get, list: if signedIn() && resource.data.userId == currentUid();
-      allow create, update: if signedIn() && validMuteWrite();
-      allow delete: if signedIn() && resource.data.userId == currentUid();
-    }
-
-    match /blocks/{blockId} {
-      allow get: if signedIn()
+      allow update: if signedIn()
           && (
-            resource.data.userId == currentUid()
-            || resource.data.targetEmail == currentEmail()
+            (userId == currentUid() && ownUserUpdate())
+            || (userId != currentUid() && adminUserUpdate())
           );
-      allow list: if signedIn() && resource.data.userId == currentUid();
-      allow create, update: if signedIn() && validBlockWrite();
-      allow delete: if signedIn() && resource.data.userId == currentUid();
-    }
+      allow delete: if isAdmin() && userId != currentUid();
 
-    match /activities/{activityId} {
-      allow get, list: if signedIn() && resource.data.userId == currentUid();
-      allow create: if signedIn() && validActivityCreate();
-      allow update: if false;
-      allow delete: if signedIn() && resource.data.userId == currentUid();
-    }
+      match /activities/{activityId} {
+        allow get, list: if signedIn() && userId == currentUid();
+        allow create: if signedIn() && userId == currentUid();
+        allow update: if false;
+        allow delete: if signedIn() && userId == currentUid();
+      }
 
-    match /friend_requests/{requestId} {
-      allow get, list: if signedIn()
-          && (
-            resource.data.from == currentEmail()
-            || resource.data.to == currentEmail()
-          );
-      allow create: if signedIn() && validFriendRequestCreate();
-      allow update: if signedIn() && validFriendRequestSenderUpdate();
-      allow delete: if signedIn()
-          && (
-            resource.data.from == currentEmail()
-            || resource.data.to == currentEmail()
-          );
+      match /mutes/{muteId} {
+        allow get, list, create, update, delete: if signedIn()
+            && userId == currentUid();
+      }
+
+      match /blocks/{blockId} {
+        allow get: if signedIn();
+        allow list, create, update, delete: if signedIn()
+            && userId == currentUid();
+      }
     }
 
     match /contacts/{contactId} {
@@ -632,55 +331,58 @@ service cloud.firestore {
             resource.data.userId == currentUid()
             || resource.data.email == currentEmail()
           );
-      allow create: if signedIn()
-          && (
-            validOwnContactCreate()
-            || validMirroredContactCreate()
-          );
-      allow update: if signedIn()
-          && (
-            (resource.data.userId == currentUid() && validOwnerContactUpdate())
-            || (resource.data.email == currentEmail() && validMirroredContactUpdate())
-          );
-      allow delete: if signedIn()
+      allow create: if validContactCreate();
+      allow update, delete: if signedIn()
           && (
             resource.data.userId == currentUid()
             || resource.data.email == currentEmail()
           );
     }
 
+    match /friend_requests/{requestId} {
+      allow get, list: if signedIn()
+          && (
+            resource.data.from == currentEmail()
+            || resource.data.to == currentEmail()
+          );
+      allow create: if validFriendRequestCreate();
+      allow update, delete: if signedIn()
+          && (
+            resource.data.from == currentEmail()
+            || resource.data.to == currentEmail()
+          );
+    }
+
     match /chats/{chatId} {
       allow get, list: if isChatParticipant(resource.data);
-      allow create: if signedIn() && validChatCreate();
-      allow update: if signedIn() && validChatUpdate();
-      allow delete: if false;
+      allow create: if validChatData(request.resource.data);
+      allow update: if isChatParticipant(resource.data)
+          && request.resource.data.participants == resource.data.participants;
+      allow delete: if isChatParticipant(resource.data);
 
       match /messages/{messageId} {
         allow get, list: if isChatParticipantById(chatId);
-        allow create: if signedIn()
-            && isChatParticipantById(chatId)
-            && validMessageCreate();
-        allow update: if false;
-        allow delete: if signedIn()
-            && isChatParticipantById(chatId)
-            && resource.data.senderEmail == currentEmail();
+        allow create: if isChatParticipantById(chatId)
+            && request.resource.data.senderEmail == currentEmail();
+        allow update, delete: if isChatParticipantById(chatId);
       }
     }
 
     match /notes/{noteId} {
       allow get, list: if canReadNote(resource.data);
-      allow create: if signedIn() && validNoteCreate();
-      allow update: if signedIn() && validNoteUpdate();
+      allow create: if validNoteCreate();
+      allow update: if validNoteContentUpdate(resource.data)
+          || noteMetadataOnlyUpdate(resource.data);
       allow delete: if canManageNote(resource.data);
 
       match /comments/{commentId} {
         allow get, list: if noteExists(noteId)
             && canReadNote(noteDoc(noteId).data);
-        allow create: if signedIn()
-            && noteExists(noteId)
+        allow create: if noteExists(noteId)
             && canReadNote(noteDoc(noteId).data)
-            && validNoteCommentCreate();
-        allow update: if false;
+            && request.resource.data.userEmail == currentEmail();
+        allow update: if noteExists(noteId)
+            && canReadNote(noteDoc(noteId).data);
         allow delete: if noteExists(noteId)
             && (
               resource.data.userEmail == currentEmail()
@@ -691,50 +393,118 @@ service cloud.firestore {
       match /history/{historyId} {
         allow get, list: if noteExists(noteId)
             && canReadNote(noteDoc(noteId).data);
-        allow create: if signedIn()
-            && noteExists(noteId)
-            && canEditNote(noteDoc(noteId).data)
-            && validNoteHistoryCreate();
+        allow create: if noteExists(noteId)
+            && canEditNoteContent(noteDoc(noteId).data)
+            && request.resource.data.userEmail == currentEmail();
         allow update: if false;
         allow delete: if noteExists(noteId)
             && canManageNote(noteDoc(noteId).data);
       }
     }
 
-    match /groups/{groupId} {
-      allow get, list: if isAdmin() || (signedIn() && currentEmail() in resource.data.members);
-      allow create: if signedIn() && validGroupCreate();
-      allow update: if signedIn()
+    match /note_invites/{inviteId} {
+      allow get, list: if signedIn()
           && (
-            validLeaderGroupUpdate(groupId)
-            || validMemberGroupPinUpdate(groupId)
-            || validSelfGroupLeave(groupId)
-            || validGroupJoinUpdate(groupId)
-            || validAdminGroupMembershipUpdate()
+            resource.data.toEmail == currentEmail()
+            || resource.data.fromEmail == currentEmail()
+            || (noteExists(resource.data.noteId)
+                && canManageNote(noteDoc(resource.data.noteId).data))
           );
-      allow delete: if isGroupLeader(groupId);
+      allow create: if signedIn()
+          && request.resource.data.fromEmail == currentEmail()
+          && noteExists(request.resource.data.noteId)
+          && canManageNote(noteDoc(request.resource.data.noteId).data);
+      allow update, delete: if signedIn()
+          && (
+            resource.data.toEmail == currentEmail()
+            || resource.data.fromEmail == currentEmail()
+            || (noteExists(resource.data.noteId)
+                && canManageNote(noteDoc(resource.data.noteId).data))
+          );
+    }
+
+    match /groups/{groupId} {
+      allow get: if signedIn();
+      allow list: if isAdmin() || isGroupMember(groupId);
+      allow create: if validGroupCreate();
+      allow update: if groupManagerUpdate(groupId)
+          || groupMemberRuntimeUpdate(groupId)
+          || groupMemberSelfJoin()
+          || legacyGroupMembershipRepair();
+      allow delete: if isAdmin() || isGroupLeader(groupId);
 
       match /comments/{commentId} {
-        allow get, list: if isGroupMember(groupId);
-        allow create: if signedIn()
-            && isGroupMember(groupId)
-            && validGroupCommentCreate();
+        allow get, list: if isGroupMember(groupId) || isAdmin();
+        allow create: if isGroupMember(groupId)
+            && request.resource.data.userEmail == currentEmail();
+        allow update: if isGroupMember(groupId) || isAdmin();
+        allow delete: if isAdmin()
+            || canManageGroup(groupId)
+            || resource.data.userEmail == currentEmail();
+      }
+
+      match /activities/{activityId} {
+        allow get, list: if isGroupMember(groupId) || isAdmin();
+        allow create: if isGroupMember(groupId) || isAdmin();
         allow update: if false;
-        allow delete: if resource.data.userEmail == currentEmail()
-            || isGroupLeader(groupId);
+        allow delete: if canManageGroup(groupId);
       }
     }
 
     match /group_codes/{groupCode} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if signedIn() && validGroupCodeCreate();
+      allow create: if signedIn()
+          && groupExists(request.resource.data.groupId)
+          && isGroupLeader(request.resource.data.groupId);
       allow update: if false;
       allow delete: if signedIn()
+          && groupExists(resource.data.groupId)
+          && (isAdmin() || isGroupLeader(resource.data.groupId));
+    }
+
+    match /group_invites/{inviteId} {
+      allow get, list: if signedIn()
           && (
-            resource.data.leaderId == currentUid()
-            || isAdmin()
+            resource.data.toEmail == currentEmail()
+            || canManageGroup(resource.data.groupId)
           );
+      allow create: if signedIn()
+          && request.resource.data.fromEmail == currentEmail()
+          && canManageGroup(request.resource.data.groupId);
+      allow update, delete: if signedIn()
+          && (
+            resource.data.toEmail == currentEmail()
+            || canManageGroup(resource.data.groupId)
+          );
+    }
+
+    match /group_requests/{requestId} {
+      allow get, list: if signedIn()
+          && (
+            resource.data.userEmail == currentEmail()
+            || canManageGroup(resource.data.groupId)
+          );
+      allow create: if signedIn()
+          && request.resource.data.userEmail == currentEmail()
+          && groupExists(request.resource.data.groupId);
+      allow update, delete: if signedIn()
+          && (
+            resource.data.userEmail == currentEmail()
+            || canManageGroup(resource.data.groupId)
+          );
+    }
+
+    match /presence/{presenceId} {
+      allow get, list: if signedIn();
+      allow create, update: if signedIn()
+          && request.resource.data.userEmail == currentEmail();
+      allow delete: if signedIn()
+          && resource.data.userEmail == currentEmail();
+    }
+
+    match /ai_chats/{userId}/{document=**} {
+      allow read, write: if signedIn();
     }
   }
 }

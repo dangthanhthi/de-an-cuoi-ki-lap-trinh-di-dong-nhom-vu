@@ -1,34 +1,48 @@
 rules_version = '2';
+
 service firebase.storage {
   match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
 
-    // Avatar người dùng: Cho phép mọi người đọc, nhưng chỉ chủ sở hữu mới được ghi
+    function isImage() {
+      return request.resource != null
+          && request.resource.contentType.matches('image/.*');
+    }
+
+    function under(sizeInMb) {
+      return request.resource != null
+          && request.resource.size < sizeInMb * 1024 * 1024;
+    }
+
     match /avatars/{uid}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if signedIn();
+      allow write: if signedIn()
+          && request.auth.uid == uid
+          && isImage()
+          && under(5);
     }
 
-    // Avatar nhóm: Cho phép mọi thành viên đọc và ghi (hoặc tùy biến thêm nếu cần)
     match /group_avatars/{groupId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read: if signedIn();
+      allow write: if signedIn()
+          && isImage()
+          && under(5);
     }
 
-    // File đính kèm ghi chú: Chỉ chủ sở hữu mới được đọc và ghi
     match /note_attachments/{uid}/{fileName} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if request.auth != null && request.auth.uid == uid;
+      allow read: if signedIn();
+      allow write: if signedIn()
+          && request.auth.uid == uid
+          && under(30);
     }
 
-    // File đính kèm chat: Chỉ những người tham gia cuộc hội thoại mới được đọc/ghi
-    // Ở đây đơn giản hóa là cho phép mọi user đã đăng nhập, 
-    // nhưng thực tế nên kiểm tra chatId có chứa uid của user không.
     match /chat_attachments/{chatId}/{fileName} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+      allow read: if signedIn();
+      allow write: if signedIn() && under(30);
     }
 
-    // Quy tắc mặc định: Chặn tất cả các truy cập khác
     match /{allPaths=**} {
       allow read, write: if false;
     }
