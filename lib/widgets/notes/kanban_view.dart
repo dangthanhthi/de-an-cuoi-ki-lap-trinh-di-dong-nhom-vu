@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../models/app_models.dart';
-import '../../controllers/firebase_service.dart';
 import '../../views/create_edit_note_screen.dart';
+import '../../controllers/app_state.dart';
 
 class KanbanView extends StatelessWidget {
   final List<Note> notes;
@@ -100,9 +100,61 @@ class _KanbanColumn extends StatelessWidget {
     required this.maxHeight,
   });
 
+  int _getTaskScore(Map<String, dynamic> t, String myEmail) {
+    final type = t['type'] as String;
+    final note = t['note'] as Note;
+    final noteAssignedTo = note.assignedTo.map((e) => e.toLowerCase().trim()).toList();
+
+    if (type == 'todo') {
+      final todo = t['todo'] as TodoItem;
+      final assignee = todo.assigneeEmail.toLowerCase().trim();
+      if (assignee == myEmail) return 2;
+      if (assignee.isEmpty && noteAssignedTo.contains(myEmail)) return 2;
+      if (assignee.isEmpty && noteAssignedTo.isEmpty) {
+        if (note.createdByEmail.toLowerCase().trim() == myEmail) return 2;
+        return 1;
+      }
+      return 0;
+    } else {
+      if (noteAssignedTo.contains(myEmail)) return 2;
+      if (noteAssignedTo.isEmpty) {
+        if (note.createdByEmail.toLowerCase().trim() == myEmail) return 2;
+        return 1;
+      }
+      return 0;
+    }
+  }
+
+  bool _isNotMyTask(Map<String, dynamic> t, String myEmail) {
+    final type = t['type'] as String;
+    final note = t['note'] as Note;
+    final noteAssignedTo = note.assignedTo.map((e) => e.toLowerCase().trim()).toList();
+
+    if (type == 'todo') {
+      final todo = t['todo'] as TodoItem;
+      final assignee = todo.assigneeEmail.toLowerCase().trim();
+      if (assignee.isNotEmpty) {
+        return assignee != myEmail;
+      } else {
+        if (noteAssignedTo.isNotEmpty) return !noteAssignedTo.contains(myEmail);
+        return false;
+      }
+    } else {
+      return noteAssignedTo.isNotEmpty && !noteAssignedTo.contains(myEmail);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+
+    final sortedTasks = List<Map<String, dynamic>>.from(tasks);
+    sortedTasks.sort((a, b) {
+      int scoreA = _getTaskScore(a, myEmail);
+      int scoreB = _getTaskScore(b, myEmail);
+      return scoreB.compareTo(scoreA);
+    });
 
     return Container(
       width: 280,
@@ -157,7 +209,7 @@ class _KanbanColumn extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: tasks.isEmpty
+            child: sortedTasks.isEmpty
                 ? Padding(
                     padding: const EdgeInsets.all(24),
                     child: Center(
@@ -173,9 +225,9 @@ class _KanbanColumn extends StatelessWidget {
                   )
                 : ListView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
-                    itemCount: tasks.length,
+                    itemCount: sortedTasks.length,
                     itemBuilder: (context, idx) =>
-                        _buildTaskCard(context, tasks[idx]),
+                        _buildTaskCard(context, sortedTasks[idx], myEmail),
                   ),
           ),
           const SizedBox(height: 12),
@@ -184,11 +236,12 @@ class _KanbanColumn extends StatelessWidget {
     );
   }
 
-  Widget _buildTaskCard(BuildContext context, Map<String, dynamic> t) {
+  Widget _buildTaskCard(BuildContext context, Map<String, dynamic> t, String myEmail) {
     final note = t['note'] as Note;
     final type = t['type'] as String;
     final colorScheme = Theme.of(context).colorScheme;
     final isDone = t['status'] == TodoStatus.done;
+    final isNotMine = _isNotMyTask(t, myEmail);
 
     String mainText = '';
     String? priority;
@@ -201,8 +254,10 @@ class _KanbanColumn extends StatelessWidget {
       priority = note.priority;
     }
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+    return Opacity(
+      opacity: isNotMine ? 0.5 : 1.0,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
@@ -328,7 +383,41 @@ class _KanbanColumn extends StatelessWidget {
           ),
         ),
       ),
+    ));
+  }
+
+  void _confirmDeleteNote(BuildContext context, Note note) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Xóa vĩnh viễn?'),
+        content: const Text(
+          'Hành động này sẽ xóa ghi chú cho TẤT CẢ thành viên trong nhóm. Bạn có chắc không?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Hủy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Xóa vĩnh viễn',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
     );
+
+    if (confirmed == true) {
+      await FirebaseService.deleteNote(note.id, note.title);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Đã xóa ghi chú vĩnh viễn')),
+        );
+      }
+    }
   }
 
   void _showQuickActions(BuildContext context, Map<String, dynamic> t) {
@@ -338,7 +427,7 @@ class _KanbanColumn extends StatelessWidget {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -357,22 +446,47 @@ class _KanbanColumn extends StatelessWidget {
                 title: 'Di chuyển sang Cần làm',
                 icon: Icons.list_alt_rounded,
                 color: colorScheme.outline,
-                onTap: () => _updateStatus(context, t, TodoStatus.todo),
+                onTap: () => _updateStatus(sheetContext, t, TodoStatus.todo),
               ),
             if (currentStatus != TodoStatus.doing)
               _ActionTile(
                 title: 'Cập nhật thành Đang làm',
                 icon: Icons.pending_actions_rounded,
                 color: colorScheme.primary,
-                onTap: () => _updateStatus(context, t, TodoStatus.doing),
+                onTap: () => _updateStatus(sheetContext, t, TodoStatus.doing),
               ),
             if (currentStatus != TodoStatus.done)
               _ActionTile(
                 title: 'Cập nhật thành Hoàn thành',
                 icon: Icons.check_circle_outline_rounded,
                 color: colorScheme.tertiary,
-                onTap: () => _updateStatus(context, t, TodoStatus.done),
+                onTap: () => _updateStatus(sheetContext, t, TodoStatus.done),
               ),
+            const SizedBox(height: 12),
+            const Divider(),
+            _ActionTile(
+              title: 'Chỉnh sửa',
+              icon: Icons.edit_outlined,
+              color: colorScheme.onSurface,
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CreateEditNoteScreen(note: t['note'] as Note),
+                  ),
+                );
+              },
+            ),
+            _ActionTile(
+              title: 'Xóa vĩnh viễn',
+              icon: Icons.delete_outline,
+              color: colorScheme.error,
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _confirmDeleteNote(context, t['note'] as Note);
+              },
+            ),
             const SizedBox(height: 12),
           ],
         ),

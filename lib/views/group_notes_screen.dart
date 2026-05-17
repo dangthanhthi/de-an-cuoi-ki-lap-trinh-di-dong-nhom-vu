@@ -673,6 +673,114 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     );
   }
 
+  int _getKanbanTaskScore(Map<String, dynamic> t, String myEmail) {
+    final note = t['note'] as Note;
+    final noteAssignedTo = note.assignedTo.map((e) => e.toLowerCase().trim()).toList();
+    final todo = t['todo'] as TodoItem;
+    final assignee = todo.assigneeEmail.toLowerCase().trim();
+
+    if (assignee == myEmail) return 2;
+    if (assignee.isEmpty && noteAssignedTo.contains(myEmail)) return 2;
+    if (assignee.isEmpty && noteAssignedTo.isEmpty) {
+      if (note.createdByEmail.toLowerCase().trim() == myEmail) return 2;
+      return 1;
+    }
+    return 0;
+  }
+
+  bool _isNotMyKanbanTask(Map<String, dynamic> t, String myEmail) {
+    final note = t['note'] as Note;
+    final noteAssignedTo = note.assignedTo.map((e) => e.toLowerCase().trim()).toList();
+    final todo = t['todo'] as TodoItem;
+    final assignee = todo.assigneeEmail.toLowerCase().trim();
+
+    if (assignee.isNotEmpty) {
+      return assignee != myEmail;
+    } else {
+      if (noteAssignedTo.isNotEmpty) return !noteAssignedTo.contains(myEmail);
+      return false;
+    }
+  }
+
+  void _showKanbanQuickActions(Map<String, dynamic> t) {
+    final note = t['note'] as Note;
+    final colorScheme = Theme.of(context).colorScheme;
+    final currentStatus = (t['todo'] as TodoItem).status;
+
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Tùy chọn công việc',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: colorScheme.primary,
+                ),
+              ),
+            ),
+            if (currentStatus != TodoStatus.todo)
+              ListTile(
+                leading: Icon(Icons.list_alt_rounded, color: colorScheme.outline),
+                title: const Text('Di chuyển sang Cần làm'),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.todo);
+                },
+              ),
+            if (currentStatus != TodoStatus.doing)
+              ListTile(
+                leading: Icon(Icons.pending_actions_rounded, color: colorScheme.primary),
+                title: const Text('Cập nhật thành Đang làm'),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.doing);
+                },
+              ),
+            if (currentStatus != TodoStatus.done)
+              ListTile(
+                leading: Icon(Icons.check_circle_outline_rounded, color: colorScheme.tertiary),
+                title: const Text('Cập nhật thành Hoàn thành'),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.done);
+                },
+              ),
+            const Divider(),
+            ListTile(
+              leading: Icon(Icons.edit_outlined, color: colorScheme.onSurface),
+              title: const Text('Chỉnh sửa'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CreateEditNoteScreen(note: note),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: Icon(Icons.delete_outline, color: colorScheme.error),
+              title: const Text('Xóa vĩnh viễn'),
+              textColor: colorScheme.error,
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _confirmDeleteNote(note);
+              },
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildKanbanTab() {
     final colorScheme = Theme.of(context).colorScheme;
     return Container(
@@ -744,6 +852,13 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                   final status = (t['todo'] as TodoItem).status;
                   return status == colStatus;
                 }).toList();
+
+                final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+                colTasks.sort((a, b) {
+                  int scoreA = _getKanbanTaskScore(a, myEmail);
+                  int scoreB = _getKanbanTaskScore(b, myEmail);
+                  return scoreB.compareTo(scoreA);
+                });
 
                 return Container(
                   width: 300,
@@ -838,9 +953,13 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     final isDone = todo.status == TodoStatus.done;
     final hasPriority = todo.priority.isNotEmpty && todo.priority != 'none';
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    final isNotMine = _isNotMyKanbanTask(t, myEmail);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+    return Opacity(
+      opacity: isNotMine ? 0.5 : 1.0,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: colorScheme.surface,
         borderRadius: BorderRadius.circular(16),
@@ -870,15 +989,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
               ),
             );
           },
-          onLongPress: () async {
-            HapticFeedback.mediumImpact();
-            final nextStatus = isDone ? TodoStatus.todo : TodoStatus.done;
-            await FirebaseService.updateTodoStatus(
-              note.id,
-              t['index'] as int,
-              nextStatus,
-            );
-          },
+          onLongPress: () => _showKanbanQuickActions(t),
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
@@ -1079,7 +1190,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
           ),
         ),
       ),
-    );
+    ));
   }
 
   String _getPriorityLabel(String priority) {
