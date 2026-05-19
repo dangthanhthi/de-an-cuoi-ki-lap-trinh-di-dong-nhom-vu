@@ -32,7 +32,7 @@ class _RequestsScreenState extends State<RequestsScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: success ? null : Theme.of(context).colorScheme.error,
+        backgroundColor: success ? Colors.green : Theme.of(context).colorScheme.error,
       ),
     );
   }
@@ -162,7 +162,8 @@ class _RequestsScreenState extends State<RequestsScreen>
                           true,
                         );
                         _showSnack(
-                          res == 'SUCCESS' ? 'Thành công' : res,
+                          res == 'SUCCESS' ? 'Đã chấp nhận lời mời chia sẻ ghi chú' : res,
+                          success: res == 'SUCCESS',
                         );
                       },
                     ),
@@ -173,11 +174,14 @@ class _RequestsScreenState extends State<RequestsScreen>
                         foregroundColor: colorScheme.error,
                       ),
                       onPressed: () async {
-                        await FirebaseService.respondToNoteInvite(
+                        final res = await FirebaseService.respondToNoteInvite(
                           doc.id,
                           false,
                         );
-                        _showSnack('Đã từ chối lời mời');
+                        _showSnack(
+                          res == 'SUCCESS' ? 'Đã từ chối lời mời chia sẻ ghi chú' : res,
+                          success: res == 'SUCCESS',
+                        );
                       },
                     ),
                   ],
@@ -264,17 +268,23 @@ class _RequestsScreenState extends State<RequestsScreen>
                                 icon: const Icon(Icons.check),
                                 onPressed: () async {
                                   if (isJoinRequest) {
-                                    await FirebaseService.respondToGroupRequest(
+                                    final res = await FirebaseService.respondToGroupRequest(
                                       doc.id,
                                       true,
                                     );
-                                    _showSnack('Đã chấp nhận thành viên');
+                                    _showSnack(
+                                      res == 'SUCCESS' ? 'Đã chấp nhận thành viên' : res,
+                                      success: res == 'SUCCESS',
+                                    );
                                   } else {
                                     final res = await FirebaseService.respondToGroupInvite(
                                       doc.id,
                                       true,
                                     );
-                                    _showSnack(res == 'SUCCESS' ? 'Thành công' : res);
+                                    _showSnack(
+                                      res == 'SUCCESS' ? 'Đã chấp nhận lời mời vào nhóm' : res,
+                                      success: res == 'SUCCESS',
+                                    );
                                   }
                                 },
                               ),
@@ -286,17 +296,23 @@ class _RequestsScreenState extends State<RequestsScreen>
                                 ),
                                 onPressed: () async {
                                   if (isJoinRequest) {
-                                    await FirebaseService.respondToGroupRequest(
+                                    final res = await FirebaseService.respondToGroupRequest(
                                       doc.id,
                                       false,
                                     );
-                                    _showSnack('Đã từ chối yêu cầu');
+                                    _showSnack(
+                                      res == 'SUCCESS' ? 'Đã từ chối yêu cầu thành viên' : res,
+                                      success: res == 'SUCCESS',
+                                    );
                                   } else {
-                                    await FirebaseService.respondToGroupInvite(
+                                    final res = await FirebaseService.respondToGroupInvite(
                                       doc.id,
                                       false,
                                     );
-                                    _showSnack('Đã từ chối lời mời');
+                                    _showSnack(
+                                      res == 'SUCCESS' ? 'Đã từ chối lời mời vào nhóm' : res,
+                                      success: res == 'SUCCESS',
+                                    );
                                   }
                                 },
                               ),
@@ -368,7 +384,10 @@ class _RequestsScreenState extends State<RequestsScreen>
                           doc.id,
                           data,
                         );
-                        _showSnack(res == 'SUCCESS' ? 'Đã chấp nhận kết bạn' : res);
+                        _showSnack(
+                          res == 'SUCCESS' ? 'Đã kết bạn thành công' : res,
+                          success: res == 'SUCCESS',
+                        );
                       },
                     ),
                     const SizedBox(width: 8),
@@ -379,7 +398,10 @@ class _RequestsScreenState extends State<RequestsScreen>
                       ),
                       onPressed: () async {
                         final res = await FirebaseService.rejectFriendRequest(doc.id);
-                        _showSnack(res == 'SUCCESS' ? 'Đã từ chối kết bạn' : res);
+                        _showSnack(
+                          res == 'SUCCESS' ? 'Đã từ chối lời mời kết bạn' : res,
+                          success: res == 'SUCCESS',
+                        );
                       },
                     ),
                   ],

@@ -14,6 +14,12 @@ class AppState {
   static String currentUserAvatar =
       "https://ui-avatars.com/api/?background=random";
   static String currentUserRole = "User";
+  static String currentSessionId = "";
+
+  static String generateSessionId() {
+    currentSessionId = "${DateTime.now().microsecondsSinceEpoch}_${UniqueKey().hashCode}";
+    return currentSessionId;
+  }
 
   static List<Note> notes = [];
   static List<Note> allNotes = [];
@@ -105,6 +111,7 @@ class AppState {
     currentUserName = "";
     currentUserAvatar = "https://ui-avatars.com/api/?background=random";
     currentUserRole = "User";
+    currentSessionId = "";
     FirebaseService.currentGroupId = "";
     notes.clear();
     allNotes.clear();
@@ -157,6 +164,7 @@ class AppState {
     String? fallbackEmail,
   }) async {
     currentUserEmail = user.email ?? fallbackEmail ?? '';
+    final sid = generateSessionId();
 
     try {
       final userDoc = await FirebaseFirestore.instance
@@ -184,6 +192,12 @@ class AppState {
         if (data['settings'] is Map<String, dynamic>) {
           applyUserSettings(data['settings'] as Map<String, dynamic>);
         }
+
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({'sessionId': sid});
+
         await FirebaseService.migrateLegacyUserData();
         return null;
       }

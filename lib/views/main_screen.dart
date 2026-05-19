@@ -79,6 +79,14 @@ class _MainScreenState extends State<MainScreen> {
           return;
         }
 
+        final serverSessionId = data['sessionId']?.toString() ?? '';
+        if (serverSessionId.isNotEmpty &&
+            AppState.currentSessionId.isNotEmpty &&
+            serverSessionId != AppState.currentSessionId) {
+          await _forceLogout('Tài khoản của bạn đang được đăng nhập ở nơi khác.');
+          return;
+        }
+
         AppState.currentUserName = (data['name'] ?? AppState.currentUserName)
             .toString();
         AppState.currentUserAvatar =
@@ -413,17 +421,7 @@ class _MainScreenState extends State<MainScreen> {
             label: 'Trang chủ',
           ),
           NavigationDestination(
-            icon: StreamBuilder<int>(
-              stream: FirebaseService.bellRequestsCountStream(),
-              builder: (context, snapshot) {
-                final count = snapshot.data ?? 0;
-                return Badge(
-                  label: Text('$count'),
-                  isLabelVisible: count > 0,
-                  child: const Icon(Icons.person_outline),
-                );
-              },
-            ),
+            icon: const Icon(Icons.person_outline),
             selectedIcon: const Icon(Icons.person),
             label: 'Hồ sơ',
           ),

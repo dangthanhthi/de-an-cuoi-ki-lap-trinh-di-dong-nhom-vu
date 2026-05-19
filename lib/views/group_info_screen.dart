@@ -1136,14 +1136,17 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         btnIcon = Icons.check_circle_outline;
                         canClick = false;
                       } else if (status == 'PENDING_SENT') {
-                        btnText = 'Đã gửi lời mời';
-                        btnIcon = Icons.hourglass_empty;
-                        canClick = false;
+                        btnText = 'Đang chờ chấp nhận (Hủy lời mời)';
+                        btnIcon = Icons.person_remove_outlined;
+                        canClick = true;
                       } else if (status == 'PENDING_RECEIVED') {
                         btnText = 'Chờ bạn phản hồi';
                         btnIcon = Icons.mail_outline;
                         canClick = false;
                       }
+
+                      final colorScheme = Theme.of(context).colorScheme;
+                      final isPending = status == 'PENDING_SENT';
 
                       return SizedBox(
                         width: double.infinity,
@@ -1151,21 +1154,33 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                         child: FilledButton.icon(
                           onPressed: canClick
                               ? () async {
-                                  final result =
-                                      await FirebaseService.sendFriendRequest(
-                                        member.email,
-                                      );
-                                  if (result == "SUCCESS") {
-                                    _showSnack('Đã gửi lời mời kết bạn!');
-                                    setSheetState(() {});
+                                  if (isPending) {
+                                    final result = await FirebaseService.cancelFriendRequest(member.email);
+                                    if (result == "SUCCESS") {
+                                      _showSnack('Đã hủy lời mời kết bạn!', success: true);
+                                      setSheetState(() {});
+                                    } else {
+                                      _showSnack(result, success: false);
+                                    }
                                   } else {
-                                    _showSnack(result);
+                                    final result =
+                                        await FirebaseService.sendFriendRequest(
+                                          member.email,
+                                        );
+                                    if (result == "SUCCESS") {
+                                      _showSnack('Đã gửi lời mời kết bạn!', success: true);
+                                      setSheetState(() {});
+                                    } else {
+                                      _showSnack(result, success: false);
+                                    }
                                   }
                                 }
                               : null,
                           icon: Icon(btnIcon),
                           label: Text(btnText),
                           style: FilledButton.styleFrom(
+                            backgroundColor: isPending ? colorScheme.errorContainer : null,
+                            foregroundColor: isPending ? colorScheme.onErrorContainer : null,
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(16),
                             ),

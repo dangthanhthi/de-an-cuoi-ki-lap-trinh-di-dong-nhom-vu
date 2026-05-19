@@ -239,9 +239,17 @@ class FirebaseService {
   static Future<void> _deleteCollectionDocs(
     CollectionReference<Object?> collection,
   ) async {
-    final snapshot = await collection.get();
-    for (final doc in snapshot.docs) {
-      await doc.reference.delete();
+    try {
+      final snapshot = await collection.get();
+      for (final doc in snapshot.docs) {
+        try {
+          await doc.reference.delete();
+        } catch (e) {
+          debugPrint("Firestore delete document error: $e");
+        }
+      }
+    } catch (e) {
+      debugPrint("Firestore get collection docs error: $e");
     }
   }
 
@@ -254,7 +262,25 @@ class FirebaseService {
     await _deleteStoredAttachments(attachments);
     await _deleteCollectionDocs(noteRef.collection('comments'));
     await _deleteCollectionDocs(noteRef.collection('history'));
-    await noteRef.delete();
+    
+    // Delete associated note invites
+    try {
+      final invitesSnapshot = await _db
+          .collection('note_invites')
+          .where('noteId', isEqualTo: noteRef.id)
+          .get();
+      for (final doc in invitesSnapshot.docs) {
+        await doc.reference.delete();
+      }
+    } catch (e) {
+      debugPrint("Firestore delete note invites error: $e");
+    }
+
+    try {
+      await noteRef.delete();
+    } catch (e) {
+      debugPrint("Firestore delete note record error: $e");
+    }
   }
 
   static List<String> _normalizeEmailList(dynamic rawValue) {
@@ -424,6 +450,7 @@ class FirebaseService {
         'isOnline': true,
         'lastActive': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),
+        'sessionId': AppState.currentSessionId,
       });
     }
   }
@@ -468,6 +495,7 @@ class FirebaseService {
   static Stream<QuerySnapshot> getFriendRequestsStream() => ContactService.getFriendRequestsStream();
   static Future<String> acceptFriendRequest(String requestId, Map<String, dynamic> requestData) => ContactService.acceptFriendRequest(requestId, requestData);
   static Future<String> rejectFriendRequest(String requestId) => ContactService.rejectFriendRequest(requestId);
+  static Future<String> cancelFriendRequest(String targetEmail) => ContactService.cancelFriendRequest(targetEmail);
   static Stream<QuerySnapshot> getContactsStream() => ContactService.getContactsStream();
   static Future<String> removeContact(String contactDocId, String contactEmail) => ContactService.removeContact(contactDocId, contactEmail);
   static Future<String> updateContactName(String contactDocId, String name) => ContactService.updateContactName(contactDocId, name);
@@ -1011,6 +1039,23 @@ class FirebaseService {
       contentIsUnderlined: note.contentIsUnderlined,
       contentFontSize: note.contentFontSize,
       isRichText: note.isRichText,
+      userId: note.userId.isNotEmpty ? note.userId : (beforeData?['userId'] ?? ''),
+      pinnedBy: note.pinnedBy.isNotEmpty ? note.pinnedBy : List<String>.from(beforeData?['pinnedBy'] ?? []),
+      viewedBy: note.viewedBy.isNotEmpty ? note.viewedBy : List<String>.from(beforeData?['viewedBy'] ?? []),
+      hiddenBy: note.hiddenBy.isNotEmpty ? note.hiddenBy : List<String>.from(beforeData?['hiddenBy'] ?? []),
+      titleIsStrikethrough: note.titleIsStrikethrough,
+      contentIsStrikethrough: note.contentIsStrikethrough,
+      isArchived: note.isArchived,
+      isLocked: note.isLocked,
+      isShared: note.isShared,
+      isHidden: note.isHidden,
+      isFavorite: note.isFavorite,
+      isChecklist: note.isChecklist,
+      backgroundColor: note.backgroundColor ?? beforeData?['backgroundColor'],
+      assignedTo: note.assignedTo.isNotEmpty ? note.assignedTo : List<String>.from(beforeData?['assignedTo'] ?? []),
+      lastViewedAt: note.lastViewedAt ?? (beforeData?['lastViewedAt'] != null ? DateTime.tryParse(beforeData?['lastViewedAt']) : null),
+      viewCount: note.viewCount > 0 ? note.viewCount : (beforeData?['viewCount'] ?? 0),
+      status: note.status,
     );
     if (!await isOnline()) {
       LocalService.cacheNote(noteForWrite);
@@ -1412,6 +1457,11 @@ class FirebaseService {
 
       if (accept) {
         final noteId = data['noteId'];
+        final noteDoc = await _db.collection('notes').doc(noteId).get();
+        if (!noteDoc.exists) {
+          await inviteRef.delete();
+          return "Ghi chú này đã bị người chia sẻ xóa.";
+        }
         await _db.collection('notes').doc(noteId).update({
           'sharedWith': FieldValue.arrayUnion([
             AppState.currentUserEmail.toLowerCase(),
@@ -1516,10 +1566,8 @@ class FirebaseService {
         throw Exception('Không lấy được link tệp sau khi tải lên.');
       }
       return url;
-    } on FirebaseException catch (e) {
-      debugPrint("Firebase Storage Error (File): [${e.code}] ${e.message}");
-      // Dự phòng Base64 cho ảnh nếu Storage bị chặn
-      // Dự phòng Base64 cho TẤT CẢ các loại tệp nếu Storage bị chặn và tệp đủ nhỏ (<950KB)
+    } catch (e) {
+      debugPrint("Storage Upload Failed (Attachment): $e. Checking Base64 fallback...");
       try {
         final bytes = await file.readAsBytes();
         if (bytes.length < 950 * 1024) {
@@ -1532,10 +1580,9 @@ class FirebaseService {
             "File too large for Base64 (${bytes.length} bytes). Storage is required.",
           );
         }
-      } catch (_) {}
-      rethrow;
-    } catch (e) {
-      debugPrint("Upload file error: $e");
+      } catch (fallbackError) {
+        debugPrint("Base64 Fallback failed: $fallbackError");
+      }
       rethrow;
     }
   }
@@ -1972,14 +2019,16 @@ class FirebaseService {
       if (approve) {
         final userEmail = data['userEmail'];
         final groupDoc = await _db.collection('groups').doc(groupId).get();
-        if (groupDoc.exists) {
-          final members = _groupMemberEmails(
-            groupDoc.data() ?? <String, dynamic>{},
-          );
-          if (members.contains(userEmail.toString().toLowerCase().trim())) {
-            await requestRef.update({'status': 'approved'});
-            return "SUCCESS"; // Already in group, just clean up request
-          }
+        if (!groupDoc.exists) {
+          await requestRef.delete();
+          return "Nhóm này không còn tồn tại (đã bị giải tán bởi trưởng nhóm).";
+        }
+        final members = _groupMemberEmails(
+          groupDoc.data() ?? <String, dynamic>{},
+        );
+        if (members.contains(userEmail.toString().toLowerCase().trim())) {
+          await requestRef.update({'status': 'approved'});
+          return "SUCCESS"; // Already in group, just clean up request
         }
 
         await _db.collection('groups').doc(groupId).update({
@@ -2307,14 +2356,16 @@ class FirebaseService {
       if (accept) {
         final groupId = data['groupId'];
         final groupDoc = await _db.collection('groups').doc(groupId).get();
-        if (groupDoc.exists) {
-          final members = _groupMemberEmails(
-            groupDoc.data() ?? <String, dynamic>{},
-          );
-          if (members.contains(myEmail)) {
-            await inviteRef.update({'status': 'accepted'});
-            return "SUCCESS"; // Already in group
-          }
+        if (!groupDoc.exists) {
+          await inviteRef.delete();
+          return "Nhóm này không còn tồn tại (đã bị giải tán bởi trưởng nhóm).";
+        }
+        final members = _groupMemberEmails(
+          groupDoc.data() ?? <String, dynamic>{},
+        );
+        if (members.contains(myEmail)) {
+          await inviteRef.update({'status': 'accepted'});
+          return "SUCCESS"; // Already in group
         }
 
         await _db.collection('groups').doc(groupId).update({
@@ -2449,50 +2500,82 @@ class FirebaseService {
       }
 
       // Cleanup Notes
-      final notes = await _db
-          .collection('notes')
-          .where('groupId', isEqualTo: groupId)
-          .get();
-      for (final doc in notes.docs) {
-        await _deleteNoteRecord(doc.reference, doc.data());
+      try {
+        final notes = await _db
+            .collection('notes')
+            .where('groupId', isEqualTo: groupId)
+            .get();
+        for (final doc in notes.docs) {
+          try {
+            await _deleteNoteRecord(doc.reference, doc.data());
+          } catch (e) {
+            debugPrint("Error deleting note record ${doc.id}: $e");
+          }
+        }
+      } catch (e) {
+        debugPrint("Error fetching notes for deletion: $e");
       }
 
       // Cleanup Comments
-      await _deleteCollectionDocs(
-        _db.collection('groups').doc(groupId).collection('comments'),
-      );
+      try {
+        await _deleteCollectionDocs(
+          _db.collection('groups').doc(groupId).collection('comments'),
+        );
+      } catch (e) {
+        debugPrint("Error deleting group comments: $e");
+      }
 
       // Cleanup Invites
-      final invites = await _db
-          .collection('group_invites')
-          .where('groupId', isEqualTo: groupId)
-          .get();
-      for (final doc in invites.docs) {
-        await doc.reference.delete();
+      try {
+        final invites = await _db
+            .collection('group_invites')
+            .where('groupId', isEqualTo: groupId)
+            .get();
+        for (final doc in invites.docs) {
+          try {
+            await doc.reference.delete();
+          } catch (e) {
+            debugPrint("Error deleting invite ${doc.id}: $e");
+          }
+        }
+      } catch (e) {
+        debugPrint("Error fetching invites for deletion: $e");
       }
 
       // Cleanup Requests
-      final requests = await _db
-          .collection('group_requests')
-          .where('groupId', isEqualTo: groupId)
-          .get();
-      for (final doc in requests.docs) {
-        await doc.reference.delete();
+      try {
+        final requests = await _db
+            .collection('group_requests')
+            .where('groupId', isEqualTo: groupId)
+            .get();
+        for (final doc in requests.docs) {
+          try {
+            await doc.reference.delete();
+          } catch (e) {
+            debugPrint("Error deleting request ${doc.id}: $e");
+          }
+        }
+      } catch (e) {
+        debugPrint("Error fetching requests for deletion: $e");
       }
 
       // Cleanup Group Code
       final groupCode = (data['groupCode'] ?? '').toString().trim();
       if (groupCode.isNotEmpty) {
-        await _db.collection('group_codes').doc(groupCode).delete();
+        try {
+          await _db.collection('group_codes').doc(groupCode).delete();
+        } catch (e) {
+          debugPrint("Error deleting group code $groupCode: $e");
+        }
       }
 
       // Delete Group itself
       await _db.collection('groups').doc(groupId).delete();
 
+      // Do not pass groupId here since the group has been deleted
       await saveActivity(
         "Xóa nhóm",
         "Đã giải tán nhóm ${data['name'] ?? ''}",
-        groupId: groupId,
       );
       return "SUCCESS";
     } catch (e) {

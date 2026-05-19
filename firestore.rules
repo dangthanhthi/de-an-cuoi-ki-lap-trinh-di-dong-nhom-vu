@@ -11,7 +11,7 @@ service cloud.firestore {
     }
 
     function currentEmail() {
-      return request.auth.token.email;
+      return request.auth.token.email.lower();
     }
 
     function userPath(uid) {
@@ -131,18 +131,15 @@ service cloud.firestore {
 
     function ownUserUpdate() {
       let changed = request.resource.data.diff(resource.data).affectedKeys();
-      return request.resource.data.email == resource.data.email
-          && request.resource.data.role == resource.data.role
-          && request.resource.data.isBanned == resource.data.isBanned
-          && request.resource.data.isDeleted == resource.data.isDeleted
-          && changed.hasOnly([
-            'name',
-            'avatar',
-            'settings',
-            'isOnline',
-            'lastActive',
-            'updatedAt',
-          ]);
+      return changed.hasOnly([
+        'name',
+        'avatar',
+        'settings',
+        'isOnline',
+        'lastActive',
+        'updatedAt',
+        'sessionId',
+      ]);
     }
 
     function adminUserUpdate() {
@@ -224,6 +221,18 @@ service cloud.firestore {
             'updatedByEmail',
             'updatedByName',
           ]);
+    }
+
+    function noteAcceptInviteUpdate(data) {
+      return signedIn()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sharedWith', 'isShared'])
+          && request.resource.data.sharedWith.hasAll(resource.data.sharedWith)
+          && request.resource.data.sharedWith.size() == resource.data.sharedWith.size() + 1
+          && currentEmail() in request.resource.data.sharedWith
+          && (
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isShared'])
+            || request.resource.data.isShared == true
+          );
     }
 
     function validNoteContentUpdate(data) {
@@ -369,10 +378,12 @@ service cloud.firestore {
     }
 
     match /notes/{noteId} {
-      allow get, list: if canReadNote(resource.data);
+      allow get: if signedIn();
+      allow list: if canReadNote(resource.data);
       allow create: if validNoteCreate();
       allow update: if validNoteContentUpdate(resource.data)
-          || noteMetadataOnlyUpdate(resource.data);
+          || noteMetadataOnlyUpdate(resource.data)
+          || noteAcceptInviteUpdate(resource.data);
       allow delete: if canManageNote(resource.data);
 
       match /comments/{commentId} {
@@ -431,12 +442,16 @@ service cloud.firestore {
           || groupMemberRuntimeUpdate(groupId)
           || groupMemberSelfJoin()
           || legacyGroupMembershipRepair();
-      allow delete: if isAdmin() || isGroupLeader(groupId);
+      allow delete: if isAdmin()
+          || (signedIn() && resource.data.leaderId == currentUid());
 
       match /comments/{commentId} {
         allow get, list: if isGroupMember(groupId) || isAdmin();
         allow create: if isGroupMember(groupId)
-            && request.resource.data.userEmail == currentEmail();
+            && (
+              request.resource.data.userEmail == currentEmail()
+              || request.resource.data.userId == 'system'
+            );
         allow update: if isGroupMember(groupId) || isAdmin();
         allow delete: if isAdmin()
             || canManageGroup(groupId)
@@ -459,8 +474,11 @@ service cloud.firestore {
           && isGroupLeader(request.resource.data.groupId);
       allow update: if false;
       allow delete: if signedIn()
-          && groupExists(resource.data.groupId)
-          && (isAdmin() || isGroupLeader(resource.data.groupId));
+          && (
+            isAdmin()
+            || !groupExists(resource.data.groupId)
+            || isGroupLeader(resource.data.groupId)
+          );
     }
 
     match /group_invites/{inviteId} {

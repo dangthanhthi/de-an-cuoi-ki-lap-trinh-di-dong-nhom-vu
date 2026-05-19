@@ -146,7 +146,13 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     final colorScheme = Theme.of(context).colorScheme;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Text(
+          message,
+          style: TextStyle(
+            color: success ? colorScheme.onTertiary : colorScheme.onError,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
         backgroundColor: success ? colorScheme.tertiary : colorScheme.error,
         behavior: SnackBarBehavior.floating,
       ),
@@ -564,33 +570,52 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       return;
     }
 
-    final noteData = Note(
-      id: widget.note?.id ?? '',
-      title: title,
-      content: content,
-      titleTextColor: _titleTextColor,
-      titleIsBold: _titleIsBold,
-      titleIsItalic: _titleIsItalic,
-      titleIsUnderlined: _titleIsUnderlined,
-      titleFontSize: _titleFontSize,
-      label: label,
-      date: widget.note?.date ?? DateTime.now().toString().substring(0, 10),
-      isTodo: _isTodo,
-      todos: cleanTodos,
-      sharedWith: widget.note?.sharedWith ?? [],
-      coverColor: _selectedColor,
-      hasReminder: _hasReminder,
-      reminderTime: _hasReminder ? _selectedReminderTime : null,
-      attachments: _attachments,
-      isPinned: _isPinned,
-      priority: priority.isEmpty ? NotePriority.none : priority,
-      createdByEmail:
-          widget.note?.createdByEmail ??
-          AppState.currentUserEmail.toLowerCase().trim(),
-      createdByName: widget.note?.createdByName ?? AppState.currentUserName,
-      groupId: _activeGroupId,
-      isRichText: false,
-    );
+    final noteData = widget.note != null
+        ? widget.note!.copyWith(
+            title: title,
+            content: content,
+            titleTextColor: _titleTextColor,
+            titleIsBold: _titleIsBold,
+            titleIsItalic: _titleIsItalic,
+            titleIsUnderlined: _titleIsUnderlined,
+            titleFontSize: _titleFontSize,
+            label: label,
+            isTodo: _isTodo,
+            todos: cleanTodos,
+            sharedWith: widget.note!.sharedWith,
+            coverColor: _selectedColor,
+            hasReminder: _hasReminder,
+            reminderTime: _hasReminder ? _selectedReminderTime : null,
+            attachments: _attachments,
+            isPinned: _isPinned,
+            priority: priority.isEmpty ? NotePriority.none : priority,
+          )
+        : Note(
+            id: '',
+            title: title,
+            content: content,
+            titleTextColor: _titleTextColor,
+            titleIsBold: _titleIsBold,
+            titleIsItalic: _titleIsItalic,
+            titleIsUnderlined: _titleIsUnderlined,
+            titleFontSize: _titleFontSize,
+            label: label,
+            date: DateTime.now().toString().substring(0, 10),
+            isTodo: _isTodo,
+            todos: cleanTodos,
+            sharedWith: const [],
+            coverColor: _selectedColor,
+            hasReminder: _hasReminder,
+            reminderTime: _hasReminder ? _selectedReminderTime : null,
+            attachments: _attachments,
+            isPinned: _isPinned,
+            priority: priority.isEmpty ? NotePriority.none : priority,
+            createdByEmail: AppState.currentUserEmail.toLowerCase().trim(),
+            createdByName: AppState.currentUserName,
+            groupId: _activeGroupId,
+            isRichText: false,
+            userId: FirebaseService.currentUid,
+          );
 
     final navigator = Navigator.of(context);
 
@@ -764,22 +789,41 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     }
 
     final picker = ImagePicker();
-    final image = await picker.pickImage(
-      source: source,
-      imageQuality: 30,
-      maxWidth: 512,
-    );
-    if (image == null) return;
+    if (source == ImageSource.gallery) {
+      final images = await picker.pickMultiImage(
+        imageQuality: 30,
+        maxWidth: 512,
+      );
+      if (images.isNotEmpty) {
+        for (final img in images) {
+          final file = File(img.path);
+          final fileSize = await file.length();
+          if (fileSize <= FirebaseService.maxAttachmentBytes) {
+            final name = img.name.isNotEmpty ? img.name : 'image.jpg';
+            await _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
+          } else {
+            _showSnack('Ảnh ${img.name} quá lớn (>30MB).', success: false);
+          }
+        }
+      }
+    } else {
+      final image = await picker.pickImage(
+        source: source,
+        imageQuality: 30,
+        maxWidth: 512,
+      );
+      if (image == null) return;
 
-    final file = File(image.path);
-    final fileSize = await file.length();
-    if (fileSize > FirebaseService.maxAttachmentBytes) {
-      _showSnack('Ảnh quá lớn (>30MB).', success: false);
-      return;
+      final file = File(image.path);
+      final fileSize = await file.length();
+      if (fileSize > FirebaseService.maxAttachmentBytes) {
+        _showSnack('Ảnh quá lớn (>30MB).', success: false);
+        return;
+      }
+
+      final name = image.name.isNotEmpty ? image.name : 'image.jpg';
+      await _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
     }
-
-    final name = image.name.isNotEmpty ? image.name : 'image.jpg';
-    await _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
   }
 
   Future<void> _pickFileAttachment() async {
@@ -793,32 +837,33 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         }
       }
 
-      final result = await FilePicker.pickFiles(withData: false);
+      final result = await FilePicker.pickFiles(withData: false, allowMultiple: true);
       if (result == null || result.files.isEmpty) return;
 
-      final file = result.files.first;
-      final path = file.path;
-      if (path == null || path.isEmpty) {
-        _showSnack('Không đọc được đường dẫn tệp.', success: false);
-        return;
-      }
+      for (final file in result.files) {
+        final path = file.path;
+        if (path == null || path.isEmpty) {
+          _showSnack('Không đọc được đường dẫn tệp.', success: false);
+          continue;
+        }
 
-      final selectedFile = File(path);
-      if (!await selectedFile.exists()) {
-        _showSnack('Tệp không tồn tại.', success: false);
-        return;
-      }
+        final selectedFile = File(path);
+        if (!await selectedFile.exists()) {
+          _showSnack('Tệp không tồn tại.', success: false);
+          continue;
+        }
 
-      final size = file.size > 0 ? file.size : await selectedFile.length();
-      if (size > FirebaseService.maxAttachmentBytes) {
-        _showSnack(
-          'Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
-          success: false,
-        );
-        return;
-      }
+        final size = file.size > 0 ? file.size : await selectedFile.length();
+        if (size > FirebaseService.maxAttachmentBytes) {
+          _showSnack(
+            'Tệp ${file.name} vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
+            success: false,
+          );
+          continue;
+        }
 
-      await _uploadAttachmentFile(selectedFile, file.name, size);
+        await _uploadAttachmentFile(selectedFile, file.name, size);
+      }
     } catch (e) {
       _showSnack('Lỗi chọn tệp: $e', success: false);
     }
@@ -828,40 +873,41 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     if (_isUploading) return;
 
     try {
-      final result = await FilePicker.pickFiles(withData: false);
+      final result = await FilePicker.pickFiles(withData: false, allowMultiple: true);
       if (result == null || result.files.isEmpty) return;
 
-      final file = result.files.first;
-      final path = file.path;
-      if (path == null || path.isEmpty) {
-        _showSnack('Không đọc được đường dẫn tệp.', success: false);
-        return;
-      }
+      for (final file in result.files) {
+        final path = file.path;
+        if (path == null || path.isEmpty) {
+          _showSnack('Không đọc được đường dẫn tệp.', success: false);
+          continue;
+        }
 
-      final selectedFile = File(path);
-      if (!await selectedFile.exists()) {
-        _showSnack(
-          'Tệp không tồn tại hoặc không truy cập được.',
-          success: false,
+        final selectedFile = File(path);
+        if (!await selectedFile.exists()) {
+          _showSnack(
+            'Tệp không tồn tại hoặc không truy cập được.',
+            success: false,
+          );
+          continue;
+        }
+
+        final size = file.size > 0 ? file.size : await selectedFile.length();
+        if (size > FirebaseService.maxAttachmentBytes) {
+          _showSnack(
+            'Tệp ${file.name} vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
+            success: false,
+          );
+          continue;
+        }
+
+        await _uploadAttachmentFile(
+          selectedFile,
+          file.name,
+          size,
+          todoIndex: index,
         );
-        return;
       }
-
-      final size = file.size > 0 ? file.size : await selectedFile.length();
-      if (size > FirebaseService.maxAttachmentBytes) {
-        _showSnack(
-          'Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.',
-          success: false,
-        );
-        return;
-      }
-
-      await _uploadAttachmentFile(
-        selectedFile,
-        file.name,
-        size,
-        todoIndex: index,
-      );
     } catch (e) {
       _showSnack('Lỗi chọn tệp: $e', success: false);
     }
@@ -1385,9 +1431,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                             fontStyle: _titleIsItalic
                                 ? FontStyle.italic
                                 : FontStyle.normal,
-                            decoration: _titleIsUnderlined
-                                ? TextDecoration.underline
-                                : null,
+                            decoration: null,
                             color: _resolvedTitleColor(colorScheme),
                             height: 1.2,
                           ),
@@ -1770,9 +1814,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                           : FontStyle.normal,
                       decoration: isDone
                           ? TextDecoration.lineThrough
-                          : (_todos[index].isUnderlined
-                                ? TextDecoration.underline
-                                : null),
+                          : null,
                       color: isDone
                           ? mutedText
                           : (_todos[index].textColor.isNotEmpty
@@ -1896,9 +1938,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                           : FontStyle.normal,
                       decoration: _todos[index].isDone
                           ? TextDecoration.lineThrough
-                          : (_todos[index].isUnderlined
-                                ? TextDecoration.underline
-                                : null),
+                          : null,
                       color: _todos[index].isDone
                           ? mutedText
                           : (_todos[index].textColor.isNotEmpty
@@ -2280,14 +2320,6 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                         setSheetState(() {});
                       }),
                     ),
-                    _buildFormatButton(
-                      icon: Icons.format_underlined,
-                      isSelected: _titleIsUnderlined,
-                      onTap: () => setState(() {
-                        _titleIsUnderlined = !_titleIsUnderlined;
-                        setSheetState(() {});
-                      }),
-                    ),
                   ],
                 ),
                 const SizedBox(height: 24),
@@ -2408,16 +2440,6 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                       onTap: () => setState(() {
                         _todos[index] = currentItem.copyWith(
                           isItalic: !currentItem.isItalic,
-                        );
-                        setSheetState(() {});
-                      }),
-                    ),
-                    _buildFormatButton(
-                      icon: Icons.format_underlined,
-                      isSelected: currentItem.isUnderlined,
-                      onTap: () => setState(() {
-                        _todos[index] = currentItem.copyWith(
-                          isUnderlined: !currentItem.isUnderlined,
                         );
                         setSheetState(() {});
                       }),

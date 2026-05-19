@@ -14,6 +14,7 @@ import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
 import 'message_details_screen.dart';
 import 'components/message_context_menu.dart';
+import '../widgets/common/multi_image_gallery.dart';
 
 class ChatScreen extends StatefulWidget {
   final String friendName;
@@ -179,9 +180,66 @@ class _ChatScreenState extends State<ChatScreen> {
   void _scrollToMessage(String messageId, List<QueryDocumentSnapshot> docs) {
     final index = docs.indexWhere((doc) => doc.id == messageId);
     if (index != -1 && _scrollController.hasClients) {
-      final reverseIndex = docs.length - 1 - index;
+      double offset = 0.0;
+      for (int i = 0; i < index; i++) {
+        final doc = docs[i];
+        final data = doc.data() as Map<String, dynamic>;
+        
+        final text = (data['text'] ?? '').toString();
+        final attachments = (data['attachments'] as List? ?? []).map((e) => e.toString()).toList();
+        final isRecalled = data['isRecalled'] == true;
+        final replyToId = data['replyToId']?.toString();
+        final reactions = Map<String, String>.from(data['reactions'] ?? {});
+
+        double itemHeight = 70.0; // base height for message
+        
+        if (isRecalled) {
+          itemHeight = 60.0;
+        } else {
+          if (text.isNotEmpty) {
+            final lines = (text.length / 30).ceil();
+            itemHeight += (lines - 1) * 20.0;
+          }
+          if (replyToId != null && replyToId.isNotEmpty) {
+            itemHeight += 50.0;
+          }
+          if (attachments.isNotEmpty) {
+            for (var att in attachments) {
+              if (isImageValue(att)) {
+                itemHeight += 160.0;
+              } else {
+                itemHeight += 50.0;
+              }
+            }
+          }
+          if (reactions.isNotEmpty) {
+            itemHeight += 24.0;
+          }
+        }
+
+        // Date separator
+        final currentTimestamp = data['createdAt'] as Timestamp?;
+        if (currentTimestamp != null) {
+          if (i == docs.length - 1) {
+            itemHeight += 60.0;
+          } else {
+            final olderDoc = docs[i + 1];
+            final olderData = olderDoc.data() as Map<String, dynamic>;
+            final olderTimestamp = olderData['createdAt'] as Timestamp?;
+            if (olderTimestamp != null) {
+              final diff = currentTimestamp.toDate().difference(olderTimestamp.toDate());
+              if (diff.inMinutes >= 30) {
+                itemHeight += 60.0;
+              }
+            }
+          }
+        }
+
+        offset += itemHeight;
+      }
+
       _scrollController.animateTo(
-        reverseIndex * 80.0, // rough estimate for reverse list
+        offset,
         duration: const Duration(milliseconds: 500),
         curve: Curves.easeInOut,
       );
@@ -1168,69 +1226,62 @@ class _ChatScreenState extends State<ChatScreen> {
     bool isMe,
     ColorScheme colorScheme,
   ) {
+    final images = attachments.where((a) => isImageValue(a)).toList();
+    final files = attachments.where((a) => !isImageValue(a)).toList();
+
     return Column(
       crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
       children: [
-        for (var i = 0; i < attachments.length; i++) ...[
-          if (isImageValue(attachments[i]))
-            GestureDetector(
-              onTap: () => _showImagePreview(attachments[i], i),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 4),
-                constraints: BoxConstraints(
-                  maxHeight: 300,
-                  maxWidth: MediaQuery.of(context).size.width * 0.75,
-                ),
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    width: 0.5,
-                  ),
-                ),
-                child: _AttachmentImage(value: attachments[i]),
-              ),
-            )
-          else
-            InkWell(
-              onTap: () => _openAttachment(attachments[i], i),
-              borderRadius: BorderRadius.circular(12),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
+        if (images.isNotEmpty) ...[
+          MultiImageGallery(
+            images: images,
+            onTapImage: (index) {
+              final originalIndex = attachments.indexOf(images[index]);
+              _showImagePreview(images[index], originalIndex);
+            },
+            maxWidth: MediaQuery.of(context).size.width * 0.7,
+          ),
+          if (files.isNotEmpty) const SizedBox(height: 8),
+        ],
+        for (var i = 0; i < files.length; i++) ...[
+          InkWell(
+            onTap: () => _openAttachment(files[i], attachments.indexOf(files[i])),
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: isMe
+                    ? colorScheme.onPrimary.withValues(alpha: 0.12)
+                    : colorScheme.surfaceContainerLow,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
                   color: isMe
-                      ? colorScheme.onPrimary.withValues(alpha: 0.12)
-                      : colorScheme.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isMe
-                        ? colorScheme.onPrimary.withValues(alpha: 0.18)
-                        : colorScheme.outlineVariant,
+                      ? colorScheme.onPrimary.withValues(alpha: 0.18)
+                      : colorScheme.outlineVariant,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.attach_file,
+                    size: 18,
+                    color: isMe ? colorScheme.onPrimary : colorScheme.primary,
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.attach_file,
-                      size: 18,
-                      color: isMe ? colorScheme.onPrimary : colorScheme.primary,
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      attachmentLabel(files[i], attachments.indexOf(files[i])),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: isMe ? colorScheme.onPrimary : null),
                     ),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(
-                        attachmentLabel(attachments[i], i),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: isMe ? colorScheme.onPrimary : null),
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
+          ),
         ],
       ],
     );

@@ -17,10 +17,21 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
   void _showMessage(String message, {bool success = true}) {
     if (!mounted) return;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(message),
-        backgroundColor: success ? null : Theme.of(context).colorScheme.error,
+        content: Text(
+          message,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        backgroundColor: success
+            ? (isDark ? Colors.green.shade800 : Colors.green.shade600)
+            : (isDark ? Colors.red.shade800 : Colors.red.shade600),
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
@@ -46,117 +57,33 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   Future<void> _showAddFriendDialog() async {
-    final emailCtrl = TextEditingController();
-    
-    try {
-      await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) {
-          bool isAdding = false;
-          return StatefulBuilder(
-            builder: (builderContext, setDialogState) {
-              return AlertDialog(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                title: const Text('Gửi lời mời kết bạn'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text('Nhập email của người bạn muốn thêm:'),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: emailCtrl,
-                      autofocus: true,
-                      decoration: InputDecoration(
-                        hintText: 'ví dụ: abc@gmail.com',
-                        prefixIcon: const Icon(Icons.email),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: isAdding ? null : () => Navigator.pop(ctx),
-                    child: const Text('Hủy', style: TextStyle(color: Colors.grey)),
-                  ),
-                  FilledButton(
-                    onPressed: isAdding
-                        ? null
-                        : () async {
-                            final targetEmail = emailCtrl.text.trim().toLowerCase();
-                            if (targetEmail.isEmpty) return;
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => const _AddFriendDialog(),
+    );
 
-                            final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-                            if (targetEmail == myEmail) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text("Không thể tự kết bạn với chính mình!"),
-                                  backgroundColor: Colors.red,
-                                ),
-                              );
-                              return;
-                            }
-                            
-                            setDialogState(() => isAdding = true);
+    if (result == null || !mounted) return;
 
-                            try {
-                              final result = await FirebaseService.sendFriendRequest(targetEmail);
-
-                              if (ctx.mounted) {
-                                Navigator.pop(ctx);
-                              }
-                              
-                              if (mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(
-                                      result == "SUCCESS"
-                                          ? "Đã gửi lời mời thành công! Chờ người kia đồng ý nhé."
-                                          : result,
-                                    ),
-                                    backgroundColor: result == "SUCCESS"
-                                        ? Colors.green
-                                        : Colors.red,
-                                  ),
-                                );
-                              }
-                            } catch (e) {
-                              if (mounted) {
-                                setDialogState(() => isAdding = false);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text("Lỗi hệ thống: $e"),
-                                    backgroundColor: Colors.red,
-                                  ),
-                                );
-                              }
-                            }
-                          },
-                    child: isAdding
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Text('Gửi lời mời'),
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      );
-    } finally {
-      emailCtrl.dispose();
-    }
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result == "SUCCESS"
+              ? "Đã gửi lời mời thành công! Chờ người kia đồng ý nhé."
+              : result,
+          style: const TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        backgroundColor: result == "SUCCESS"
+            ? (isDark ? Colors.green.shade800 : Colors.green.shade600)
+            : (isDark ? Colors.red.shade800 : Colors.red.shade600),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _showEditContactDialog(
@@ -919,6 +846,96 @@ class _ContactsScreenState extends State<ContactsScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _AddFriendDialog extends StatefulWidget {
+  const _AddFriendDialog();
+
+  @override
+  State<_AddFriendDialog> createState() => _AddFriendDialogState();
+}
+
+class _AddFriendDialogState extends State<_AddFriendDialog> {
+  final _emailCtrl = TextEditingController();
+  bool _isAdding = false;
+
+  @override
+  void dispose() {
+    _emailCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+      title: const Text('Gửi lời mời kết bạn'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Nhập email của người bạn muốn thêm:'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _emailCtrl,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: 'ví dụ: abc@gmail.com',
+              prefixIcon: const Icon(Icons.email),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: _isAdding ? null : () => Navigator.pop(context),
+          child: const Text('Hủy', style: TextStyle(color: Colors.grey)),
+        ),
+        FilledButton(
+          onPressed: _isAdding
+              ? null
+              : () async {
+                  final targetEmail = _emailCtrl.text.trim().toLowerCase();
+                  if (targetEmail.isEmpty) return;
+
+                  final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+                  if (targetEmail == myEmail) {
+                    Navigator.pop(context, "Không thể tự kết bạn với chính mình!");
+                    return;
+                  }
+
+                  setState(() => _isAdding = true);
+
+                  try {
+                    final result = await FirebaseService.sendFriendRequest(targetEmail);
+                    if (context.mounted) {
+                      Navigator.pop(context, result);
+                    }
+                  } catch (e) {
+                    if (context.mounted) {
+                      setState(() => _isAdding = false);
+                      Navigator.pop(context, "Lỗi hệ thống: $e");
+                    }
+                  }
+                },
+          child: _isAdding
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                )
+              : const Text('Gửi lời mời'),
+        ),
+      ],
     );
   }
 }

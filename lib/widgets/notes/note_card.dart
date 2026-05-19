@@ -121,9 +121,7 @@ class NoteCard extends StatelessWidget {
                                 fontStyle: note.titleIsItalic
                                     ? FontStyle.italic
                                     : FontStyle.normal,
-                                decoration: note.titleIsUnderlined
-                                    ? TextDecoration.underline
-                                    : null,
+                                decoration: null,
                                 color: styledTitleColor,
                               ),
                             ),

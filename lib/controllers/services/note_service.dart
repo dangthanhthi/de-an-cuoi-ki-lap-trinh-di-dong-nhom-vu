@@ -217,6 +217,11 @@ class NoteService extends BaseService {
 
       if (accept) {
         final noteId = data['noteId'];
+        final noteDoc = await BaseService.db.collection('notes').doc(noteId).get();
+        if (!noteDoc.exists) {
+          await inviteRef.delete();
+          return "Ghi chú này đã bị người chia sẻ xóa.";
+        }
         await BaseService.db.collection('notes').doc(noteId).update({
           'sharedWith': FieldValue.arrayUnion([myEmail]),
           'isShared': true,

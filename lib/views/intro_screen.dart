@@ -186,11 +186,15 @@ class _IntroScreenState extends State<IntroScreen> {
                     ),
                   ),
                 ),
-                TextButton(
-                  onPressed: _finishOnboarding,
-                  child: Text(
-                    'Bỏ qua',
-                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                Semantics(
+                  label: 'start_button',
+                  button: true,
+                  child: TextButton(
+                    onPressed: _finishOnboarding,
+                    child: Text(
+                      'Bỏ qua',
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
+                    ),
                   ),
                 ),
               ],

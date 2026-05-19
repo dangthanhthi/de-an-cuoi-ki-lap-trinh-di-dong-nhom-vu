@@ -190,15 +190,34 @@ class ContactService extends BaseService {
         .where('from', isEqualTo: myEmail)
         .where('to', isEqualTo: targetEmail)
         .get();
-    if (sentRequest.docs.isNotEmpty) return "SENT";
+    if (sentRequest.docs.isNotEmpty) return "PENDING_SENT";
 
     final receivedRequest = await BaseService.db
         .collection('friend_requests')
         .where('from', isEqualTo: targetEmail)
         .where('to', isEqualTo: myEmail)
         .get();
-    if (receivedRequest.docs.isNotEmpty) return "RECEIVED";
+    if (receivedRequest.docs.isNotEmpty) return "PENDING_RECEIVED";
 
     return "NONE";
+  }
+
+  static Future<String> cancelFriendRequest(String targetEmail) async {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    final cleanEmail = targetEmail.toLowerCase().trim();
+    if (myEmail.isEmpty || cleanEmail.isEmpty) return "Lỗi dữ liệu";
+    try {
+      final query = await BaseService.db
+          .collection('friend_requests')
+          .where('from', isEqualTo: myEmail)
+          .where('to', isEqualTo: cleanEmail)
+          .get();
+      for (final doc in query.docs) {
+        await doc.reference.delete();
+      }
+      return "SUCCESS";
+    } catch (e) {
+      return "Lỗi khi hủy lời mời: $e";
+    }
   }
 }

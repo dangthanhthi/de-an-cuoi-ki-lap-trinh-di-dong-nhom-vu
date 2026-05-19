@@ -16,6 +16,7 @@ import '../utils/media_utils.dart';
 import 'create_edit_note_screen.dart';
 import '../utils/note_utils.dart';
 import '../widgets/success_animation.dart';
+import '../widgets/common/multi_image_gallery.dart';
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
@@ -89,14 +90,10 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Không mở được tệp đính kèm này')),
-      );
+      _showSnack('Không mở được tệp đính kèm này', success: false);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Lỗi mở tệp: $e')));
+      _showSnack('Lỗi mở tệp: $e', success: false);
     }
   }
 
@@ -122,7 +119,6 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     if (!mounted) return;
 
     final navigator = Navigator.of(context);
-    final scaffoldMsg = ScaffoldMessenger.of(context);
 
     try {
       final result = await FirebaseService.deleteNote(
@@ -130,16 +126,14 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         widget.note.title,
       );
       if (result != 'SUCCESS') {
-        scaffoldMsg.showSnackBar(SnackBar(content: Text(result)));
+        _showSnack(result, success: false);
         return;
       }
 
+      _showSnack('Đã xóa ghi chú thành công', success: true);
       navigator.pop();
-      scaffoldMsg.showSnackBar(
-        const SnackBar(content: Text('Đã xóa ghi chú thành công')),
-      );
     } catch (e) {
-      scaffoldMsg.showSnackBar(SnackBar(content: Text('Lỗi khi xóa: $e')));
+      _showSnack('Lỗi khi xóa: $e', success: false);
     }
   }
 
@@ -258,9 +252,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Lỗi xuất PDF: $e')));
+      _showSnack('Lỗi xuất PDF: $e', success: false);
     }
   }
 
@@ -485,11 +477,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         );
                         if (mounted) setState(() {});
                       }
-                    : () => ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Bạn không có quyền chỉnh sửa nội dung ghi chú này'),
-                          ),
-                        ),
+                    : () => _showSnack('Bạn không có quyền chỉnh sửa nội dung ghi chú này', success: false),
               ),
 
               if (canDelete) ...[
@@ -553,9 +541,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       fontStyle: widget.note.titleIsItalic
                           ? FontStyle.italic
                           : FontStyle.normal,
-                      decoration: widget.note.titleIsUnderlined
-                          ? TextDecoration.underline
-                          : null,
+                      decoration: null,
                       color:
                           widget.note.resolvedTitleColor ??
                           (isSharedWithMe
@@ -675,8 +661,29 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                   ],
                   const Divider(height: 40),
 
-                  // Hiển thị file đính kèm nếu có.
-                  if (widget.note.attachments.isNotEmpty) ...[
+                  // Hiển thị tệp đính kèm.
+                  if (widget.note.attachments.any((a) => isImageValue(a))) ...[
+                    Text(
+                      'Hình ảnh đính kèm:',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: mutedText,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    MultiImageGallery(
+                      images: widget.note.attachments.where((a) => isImageValue(a)).toList(),
+                      onTapImage: (index) {
+                        final imagesOnly = widget.note.attachments.where((a) => isImageValue(a)).toList();
+                        final originalIndex = widget.note.attachments.indexOf(imagesOnly[index]);
+                        _openAttachment(imagesOnly[index], originalIndex);
+                      },
+                      maxWidth: MediaQuery.of(context).size.width * 0.75,
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+
+                  if (widget.note.attachments.any((a) => !isImageValue(a))) ...[
                     Text(
                       'Tệp đính kèm:',
                       style: TextStyle(
@@ -689,22 +696,20 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        for (var i = 0; i < widget.note.attachments.length; i++)
+                        for (var a in widget.note.attachments.where((a) => !isImageValue(a)))
                           ActionChip(
-                            avatar: Icon(
-                              isImageValue(widget.note.attachments[i])
-                                  ? Icons.image_outlined
-                                  : Icons.attach_file,
+                            avatar: const Icon(
+                              Icons.attach_file,
                               size: 16,
                             ),
                             label: Text(
-                              attachmentLabel(widget.note.attachments[i], i),
+                              attachmentLabel(a, widget.note.attachments.indexOf(a)),
                               style: const TextStyle(fontSize: 12),
                             ),
                             backgroundColor: colorScheme.surfaceContainerHighest
                                 .withValues(alpha: isDark ? 0.58 : 1),
                             onPressed: () =>
-                                _openAttachment(widget.note.attachments[i], i),
+                                _openAttachment(a, widget.note.attachments.indexOf(a)),
                           ),
                       ],
                     ),
@@ -829,9 +834,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                                             : FontStyle.normal,
                                         decoration: isDone
                                             ? TextDecoration.lineThrough
-                                            : (todo.isUnderlined
-                                                  ? TextDecoration.underline
-                                                  : null),
+                                            : null,
                                         color: isDone
                                             ? mutedText
                                             : (todo.textColor.isNotEmpty

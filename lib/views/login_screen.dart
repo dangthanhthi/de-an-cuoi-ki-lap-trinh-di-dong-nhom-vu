@@ -148,13 +148,17 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showError(String message) {
+    final theme = Theme.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
           message,
-          style: const TextStyle(fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: theme.colorScheme.onError,
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        backgroundColor: Theme.of(context).colorScheme.error,
+        backgroundColor: theme.colorScheme.error,
         behavior: SnackBarBehavior.floating,
         margin: const EdgeInsets.all(16),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
