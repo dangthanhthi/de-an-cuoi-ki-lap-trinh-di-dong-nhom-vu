@@ -22,7 +22,7 @@ import '../controllers/ai_service.dart';
 import '../models/app_models.dart';
 import '../utils/media_utils.dart';
 import '../utils/snack_utils.dart';
-// Removed AIChatNoteScreen import
+import 'ai_chat_note_screen.dart';
 
 class CreateEditNoteScreen extends StatefulWidget {
   final Note? note;
@@ -1427,6 +1427,23 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               onSelected: (value) {
                 if (value == 1) _suggestContentOnly();
                 if (value == 2) _suggestTodosOnly();
+                if (value == 3) {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => AIChatNoteScreen(
+                        noteTitle: _titleController.text,
+                        noteContent: _contentController.text,
+                        onTodosAccepted: (suggestions) {
+                          setState(() {
+                            _appendSuggestedTodos(suggestions);
+                          });
+                          return suggestions.length;
+                        },
+                      ),
+                    ),
+                  );
+                }
               },
               itemBuilder: (context) => [
                 const PopupMenuItem(
@@ -1449,8 +1466,19 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     ],
                   ),
                 ),
+                const PopupMenuItem(
+                  value: 3,
+                  child: Row(
+                    children: [
+                      Icon(Icons.chat_bubble_outline_rounded, size: 20),
+                      SizedBox(width: 10),
+                      Text('Trò chuyện với AI'),
+                    ],
+                  ),
+                ),
               ],
             ),
+
           ],
           if (!_isLimitedEditor)
             IconButton(
