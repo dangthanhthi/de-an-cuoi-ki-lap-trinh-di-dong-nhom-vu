@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:shimmer/shimmer.dart';
 import '../../utils/media_utils.dart';
 
 class MultiImageGallery extends StatelessWidget {
@@ -92,6 +94,7 @@ class _ImageWidget extends StatelessWidget {
         return Image.memory(
           bytes,
           fit: fit,
+          gaplessPlayback: true,
           errorBuilder: (context, error, stackTrace) => Container(
             color: Colors.grey.shade200,
             child: const Icon(Icons.broken_image, size: 30, color: Colors.grey),
@@ -99,10 +102,24 @@ class _ImageWidget extends StatelessWidget {
         );
       }
     }
-    return Image.network(
-      url,
+
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.grey[850]! : Colors.grey[300]!;
+    final highlightColor = isDark ? Colors.grey[800]! : Colors.grey[100]!;
+
+    return CachedNetworkImage(
+      imageUrl: url,
       fit: fit,
-      errorBuilder: (context, error, stackTrace) => Container(
+      placeholder: (context, url) => Shimmer.fromColors(
+        baseColor: baseColor,
+        highlightColor: highlightColor,
+        child: Container(
+          color: Colors.white,
+          width: double.infinity,
+          height: double.infinity,
+        ),
+      ),
+      errorWidget: (context, url, error) => Container(
         color: Colors.grey.shade200,
         child: const Icon(Icons.broken_image, size: 30, color: Colors.grey),
       ),

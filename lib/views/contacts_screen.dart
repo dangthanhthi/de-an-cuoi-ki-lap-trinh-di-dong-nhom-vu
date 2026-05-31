@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:easy_image_viewer/easy_image_viewer.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 import 'chat_screen.dart';
 
 class ContactsScreen extends StatefulWidget {
@@ -14,26 +17,30 @@ class ContactsScreen extends StatefulWidget {
 
 class _ContactsScreenState extends State<ContactsScreen> {
   String _searchQuery = '';
+  final FocusNode _searchFocusNode = FocusNode();
+  late Stream<QuerySnapshot> _friendRequestsStream;
+  late Stream<QuerySnapshot> _chatListStream;
+  late Stream<QuerySnapshot> _contactsStream;
+  late Stream<QuerySnapshot> _myMutesStream;
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _friendRequestsStream = FirebaseService.getFriendRequestsStream();
+    _chatListStream = FirebaseService.getChatListStream();
+    _contactsStream = FirebaseService.getContactsStream();
+    _myMutesStream = FirebaseService.getMyMutesStream();
+  }
 
   void _showMessage(String message, {bool success = true}) {
     if (!mounted) return;
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          message,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: success
-            ? (isDark ? Colors.green.shade800 : Colors.green.shade600)
-            : (isDark ? Colors.red.shade800 : Colors.red.shade600),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    SnackUtils.show(context, message, success: success);
   }
 
   bool _isMuteActive(Map<String, dynamic> data) {
@@ -65,24 +72,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
     if (result == null || !mounted) return;
 
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          result == "SUCCESS"
-              ? "Đã gửi lời mời thành công! Chờ người kia đồng ý nhé."
-              : result,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: result == "SUCCESS"
-            ? (isDark ? Colors.green.shade800 : Colors.green.shade600)
-            : (isDark ? Colors.red.shade800 : Colors.red.shade600),
-        behavior: SnackBarBehavior.floating,
-      ),
+    SnackUtils.show(
+      context,
+      result == "SUCCESS"
+          ? "Đã gửi lời mời thành công! Chờ người kia đồng ý nhé."
+          : result,
+      success: result == "SUCCESS",
     );
   }
 
@@ -218,15 +213,13 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
     if (shouldDelete != true || !mounted) return;
 
-    final scaffoldMsg = ScaffoldMessenger.of(context);
     final result = await FirebaseService.removeContact(contactId, email);
     if (!mounted) return;
 
-    scaffoldMsg.showSnackBar(
-      SnackBar(
-        content: Text(result == "SUCCESS" ? "Đã hủy kết bạn" : result),
-        backgroundColor: result == "SUCCESS" ? Colors.green : Colors.red,
-      ),
+    SnackUtils.show(
+      context,
+      result == "SUCCESS" ? "Đã hủy kết bạn" : result,
+      success: result == "SUCCESS",
     );
   }
   Future<void> _showContactQuickActions(
@@ -343,8 +336,46 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
 
+  String _formatChatTime(Timestamp? timestamp) {
+    if (timestamp == null) return '';
+    final date = timestamp.toDate();
+    final now = DateTime.now();
+    
+    final diff = now.difference(date);
+    if (diff.inDays == 0 && date.day == now.day) {
+      final hour = date.hour.toString().padLeft(2, '0');
+      final minute = date.minute.toString().padLeft(2, '0');
+      return '$hour:$minute';
+    } else if (diff.inDays == 1 || (diff.inDays == 0 && date.day != now.day)) {
+      return 'Hôm qua';
+    } else if (diff.inDays < 7) {
+      switch (date.weekday) {
+        case 1: return 'Thứ 2';
+        case 2: return 'Thứ 3';
+        case 3: return 'Thứ 4';
+        case 4: return 'Thứ 5';
+        case 5: return 'Thứ 6';
+        case 6: return 'Thứ 7';
+        case 7: return 'Chủ Nhật';
+        default: return '';
+      }
+    } else {
+      final day = date.day.toString().padLeft(2, '0');
+      final month = date.month.toString().padLeft(2, '0');
+      return '$day/$month';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
@@ -357,12 +388,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
         children: [
           // Lời mời kết bạn.
           StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getFriendRequestsStream(),
+            stream: _friendRequestsStream,
             builder: (context, snapshot) {
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                 return const SizedBox();
               }
-
+ 
               final requests = snapshot.data!.docs;
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -390,7 +421,7 @@ class _ContactsScreenState extends State<ContactsScreen> {
                       var reqData =
                           requests[index].data() as Map<String, dynamic>;
                       String reqId = requests[index].id;
-
+ 
                       return ListTile(
                         tileColor: colorScheme.secondaryContainer.withValues(alpha: 0.3),
                         leading: CircleAvatar(
@@ -438,11 +469,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
               );
             },
           ),
-
+ 
           // Danh bạ chính.
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: TextField(
+              focusNode: _searchFocusNode,
               onChanged: (value) => setState(() => _searchQuery = value),
               decoration: InputDecoration(
                 hintText: 'Tìm kiếm bạn bè...',
@@ -456,331 +488,448 @@ class _ContactsScreenState extends State<ContactsScreen> {
               ),
             ),
           ),
-
+ 
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getContactsStream(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.people_outline,
-                          size: 80,
-                          color: colorScheme.outlineVariant,
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Danh bạ trống',
-                          style: TextStyle(
-                            fontSize: 18,
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                        Text(
-                          'Nhấn dấu + để tìm bạn bè nhé!',
-                          style: TextStyle(color: colorScheme.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                final query = _searchQuery.toLowerCase().trim();
-                final contacts = snapshot.data!.docs.where((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-                  final name = (data['name'] ?? '').toString().toLowerCase();
-                  final email = (data['email'] ?? '').toString().toLowerCase();
-                  return query.isEmpty ||
-                      name.contains(query) ||
-                      email.contains(query);
-                }).toList();
-
-                if (contacts.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.search_off,
-                          size: 64,
-                          color: colorScheme.outlineVariant,
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Không tìm thấy bạn bè phù hợp',
-                          style: TextStyle(color: colorScheme.onSurfaceVariant),
-                        ),
-                      ],
-                    ),
-                  );
+              stream: _chatListStream,
+              builder: (context, chatSnapshot) {
+                final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+                final chatsMap = <String, Map<String, dynamic>>{};
+                if (chatSnapshot.hasData) {
+                  for (final doc in chatSnapshot.data!.docs) {
+                    final data = doc.data() as Map<String, dynamic>;
+                    final participants = List<String>.from(data['participants'] ?? const []);
+                    final friendEmail = participants.firstWhere(
+                      (p) => p.toLowerCase().trim() != myEmail,
+                      orElse: () => '',
+                    ).toLowerCase().trim();
+                    if (friendEmail.isNotEmpty) {
+                      chatsMap[friendEmail] = data;
+                    }
+                  }
                 }
 
                 return StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseService.getMyMutesStream(),
-                  builder: (context, muteSnapshot) {
-                    final mutedUsers = _activeMutedUsers(
-                      muteSnapshot.data?.docs ?? [],
-                    );
-
-                    return ListView.builder(
-                      itemCount: contacts.length,
-                      itemBuilder: (context, index) {
-                        final contact =
-                            contacts[index].data() as Map<String, dynamic>;
-                        final docId = contacts[index].id;
-                        final name = contact['name'] ?? 'Không tên';
-                        final email = (contact['email'] ?? '').toString();
-                        final isMuted = mutedUsers.contains(
-                          email.toLowerCase().trim(),
-                        );
-
-                        return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 4,
-                          ),
-                          leading: Stack(
-                            children: [
-                              CircleAvatar(
-                                backgroundColor: Colors.transparent,
-                                backgroundImage: avatarImageProvider(
-                                  contact['avatar']?.toString(),
-                                  name: name.toString(),
-                                ),
+                  stream: _contactsStream,
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError || chatSnapshot.hasError) {
+                      final err = snapshot.error ?? chatSnapshot.error;
+                      debugPrint('Error in contacts or chat list stream: $err');
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.cloud_off_outlined, size: 64, color: colorScheme.outlineVariant),
+                            const SizedBox(height: 16),
+                            Text('Không tải được danh bạ', style: TextStyle(color: colorScheme.onSurfaceVariant)),
+                            const SizedBox(height: 8),
+                            TextButton(
+                              onPressed: () => setState(() {
+                                _contactsStream = FirebaseService.getContactsStream();
+                                _chatListStream = FirebaseService.getChatListStream();
+                              }),
+                              child: const Text('Thử lại'),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+                    if (snapshot.connectionState == ConnectionState.waiting ||
+                        chatSnapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.people_outline,
+                              size: 80,
+                              color: colorScheme.outlineVariant,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Danh bạ trống',
+                              style: TextStyle(
+                                  fontSize: 18,
+                                  color: colorScheme.onSurfaceVariant,
                               ),
-                              Positioned.fill(
-                                child: Material(
-                                  color: Colors.transparent,
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(20),
-                                    onTap: () {
-                                      final avatar = contact['avatar']?.toString() ?? '';
-                                      if (avatar.isNotEmpty) {
-                                        _showFullScreenImage(avatar, name.toString());
-                                      }
+                            ),
+                            Text(
+                              'Nhấn dấu + để tìm bạn bè nhé!',
+                              style: TextStyle(color: colorScheme.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+ 
+                    final query = _searchQuery.toLowerCase().trim();
+                    final contacts = snapshot.data!.docs.where((doc) {
+                      final data = doc.data() as Map<String, dynamic>;
+                      final name = (data['name'] ?? '').toString().toLowerCase();
+                      final email = (data['email'] ?? '').toString().toLowerCase();
+                      return query.isEmpty ||
+                          name.contains(query) ||
+                          email.contains(query);
+                    }).toList();
+ 
+                    if (contacts.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.search_off,
+                              size: 64,
+                              color: colorScheme.outlineVariant,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              'Không tìm thấy bạn bè phù hợp',
+                              style: TextStyle(color: colorScheme.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+ 
+                    // Sắp xếp contacts theo kiểu Zalo: Ghim -> updatedAt gần nhất -> Tên bảng chữ cái
+                    contacts.sort((a, b) {
+                      final dataA = a.data() as Map<String, dynamic>;
+                      final dataB = b.data() as Map<String, dynamic>;
+
+                      final emailA = (dataA['email'] ?? '').toString().toLowerCase().trim();
+                      final emailB = (dataB['email'] ?? '').toString().toLowerCase().trim();
+
+                      final isPinnedA = dataA['chatPinned'] == true;
+                      final isPinnedB = dataB['chatPinned'] == true;
+
+                      if (isPinnedA != isPinnedB) {
+                        return isPinnedA ? -1 : 1;
+                      }
+
+                      final chatA = chatsMap[emailA];
+                      final chatB = chatsMap[emailB];
+
+                      final timeA = chatA?['updatedAt'] as Timestamp?;
+                      final timeB = chatB?['updatedAt'] as Timestamp?;
+
+                      if (timeA != null && timeB != null) {
+                        return timeB.compareTo(timeA); // tin nhắn mới nhất trước
+                      } else if (timeA != null) {
+                        return -1;
+                      } else if (timeB != null) {
+                        return 1;
+                      }
+
+                      final nameA = (dataA['name'] ?? '').toString().toLowerCase();
+                      final nameB = (dataB['name'] ?? '').toString().toLowerCase();
+                      return nameA.compareTo(nameB);
+                    });
+
+                    return StreamBuilder<QuerySnapshot>(
+                      stream: _myMutesStream,
+                      builder: (context, muteSnapshot) {
+                        final mutedUsers = _activeMutedUsers(
+                          muteSnapshot.data?.docs ?? [],
+                        );
+ 
+                        return ListView.builder(
+                          itemCount: contacts.length,
+                          itemBuilder: (context, index) {
+                            final contact =
+                                contacts[index].data() as Map<String, dynamic>;
+                            final docId = contacts[index].id;
+                            final name = contact['name'] ?? 'Không tên';
+                            final email = (contact['email'] ?? '').toString();
+                            final isMuted = mutedUsers.contains(
+                              email.toLowerCase().trim(),
+                            );
+ 
+                            final cleanEmail = email.toLowerCase().trim();
+                            final hasChat = chatsMap.containsKey(cleanEmail);
+                            final chatData = chatsMap[cleanEmail];
+                            final unreadCount = hasChat ? (chatData!['unreadCount']?[myEmail] ?? 0) as int : 0;
+                            final lastMsg = hasChat ? (chatData!['lastMessage'] ?? '').toString() : '';
+                            final lastSender = hasChat ? (chatData!['lastSender'] ?? '').toString() : '';
+                            final isMe = lastSender == myEmail;
+                            final lastMsgTime = hasChat ? chatData!['updatedAt'] as Timestamp? : null;
+
+                            Widget avatarWidget = Stack(
+                              children: [
+                                CircleAvatar(
+                                  backgroundColor: Colors.transparent,
+                                  backgroundImage: avatarImageProvider(
+                                    contact['avatar']?.toString(),
+                                    name: name.toString(),
+                                  ),
+                                ),
+                                Positioned.fill(
+                                  child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(20),
+                                      onTap: () {
+                                        final avatar = contact['avatar']?.toString() ?? '';
+                                        if (avatar.isNotEmpty) {
+                                          _showFullScreenImage(avatar, name.toString());
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ),
+                                StreamBuilder<DocumentSnapshot?>(
+                                  stream: FirebaseService.getUserByEmailStream(email),
+                                  builder: (context, userSnap) {
+                                    if (!userSnap.hasData || userSnap.data == null) return const SizedBox();
+                                    final userData = userSnap.data!.data() as Map<String, dynamic>?;
+                                    final lastActive = userData?['lastActive'] as Timestamp?;
+                                    final isOnline = (userData?['isOnline'] == true) &&
+                                        lastActive != null &&
+                                        DateTime.now().difference(lastActive.toDate()).inMinutes < 5;
+                                    if (!isOnline) return const SizedBox();
+                                    return Positioned(
+                                      right: 0,
+                                      bottom: 0,
+                                      child: Container(
+                                        width: 12,
+                                        height: 12,
+                                        decoration: BoxDecoration(
+                                          color: Colors.green,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(color: colorScheme.surface, width: 2),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
+                            );
+
+                            if (unreadCount > 0) {
+                              avatarWidget = Badge(
+                                label: Text(unreadCount.toString()),
+                                backgroundColor: Colors.red,
+                                child: avatarWidget,
+                              );
+                            }
+
+                            return ListTile(
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 4,
+                              ),
+                              leading: avatarWidget,
+                              title: Text(
+                                name,
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (hasChat && lastMsg.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(bottom: 2),
+                                      child: Text(
+                                        isMe ? "Bạn: $lastMsg" : lastMsg,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontWeight: unreadCount > 0 ? FontWeight.bold : FontWeight.normal,
+                                          color: unreadCount > 0 ? colorScheme.onSurface : colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    )
+                                  else
+                                    Text(email),
+                                  const SizedBox(height: 2),
+                                  StreamBuilder<DocumentSnapshot?>(
+                                    stream: FirebaseService.getUserByEmailStream(email),
+                                    builder: (context, userSnap) {
+                                      if (!userSnap.hasData || userSnap.data == null) return const SizedBox();
+                                      final userData = userSnap.data!.data() as Map<String, dynamic>?;
+                                      final lastActive = userData?['lastActive'] as Timestamp?;
+                                      final isOnline = (userData?['isOnline'] == true) &&
+                                          lastActive != null &&
+                                          DateTime.now().difference(lastActive.toDate()).inMinutes < 5;
+                                      if (lastActive == null) return const SizedBox();
+                                      return Text(
+                                        _buildOnlineStatusText(lastActive, isOnline: isOnline),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: isOnline ? Colors.green : colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                                          fontWeight: isOnline ? FontWeight.bold : FontWeight.normal,
+                                        ),
+                                      );
                                     },
                                   ),
-                                ),
-                              ),
-                              StreamBuilder<DocumentSnapshot?>(
-                                stream: FirebaseService.getUserByEmailStream(email),
-                                builder: (context, userSnap) {
-                                  if (!userSnap.hasData || userSnap.data == null) return const SizedBox();
-                                  final userData = userSnap.data!.data() as Map<String, dynamic>?;
-                                  final lastActive = userData?['lastActive'] as Timestamp?;
-                                  final isOnline = (userData?['isOnline'] == true) &&
-                                      lastActive != null &&
-                                      DateTime.now().difference(lastActive.toDate()).inMinutes < 5;
-                                  if (!isOnline) return const SizedBox();
-                                  return Positioned(
-                                    right: 0,
-                                    bottom: 0,
-                                    child: Container(
-                                      width: 12,
-                                      height: 12,
-                                      decoration: BoxDecoration(
-                                        color: Colors.green,
-                                        shape: BoxShape.circle,
-                                        border: Border.all(color: colorScheme.surface, width: 2),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                          title: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  name,
-                                  style: const TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              StreamBuilder<DocumentSnapshot?>(
-                                stream: FirebaseService.getUserByEmailStream(email),
-                                builder: (context, userSnap) {
-                                  if (!userSnap.hasData || userSnap.data == null) return const SizedBox();
-                                  final userData = userSnap.data!.data() as Map<String, dynamic>?;
-                                  final lastActive = userData?['lastActive'] as Timestamp?;
-                                  final isOnline = (userData?['isOnline'] == true) &&
-                                      lastActive != null &&
-                                      DateTime.now().difference(lastActive.toDate()).inMinutes < 5;
-                                  if (lastActive == null) return const SizedBox();
-                                  return Text(
-                                    _buildOnlineStatusText(lastActive, isOnline: isOnline),
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: isOnline ? Colors.green : colorScheme.onSurfaceVariant,
-                                      fontWeight: isOnline ? FontWeight.bold : FontWeight.w500,
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                          subtitle: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(email),
-                              if (isMuted)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 3,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: colorScheme.primaryContainer,
-                                      borderRadius: BorderRadius.circular(999),
-                                    ),
-                                    child: Text(
-                                      'Đang tắt thông báo',
-                                      style: TextStyle(
-                                        color: colorScheme.onPrimaryContainer,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              IconButton(
-                                tooltip: 'Nhắn tin',
-                                icon: const Icon(
-                                  Icons.chat_bubble_outline,
-                                  color: Colors.green,
-                                ),
-                                onPressed: () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (context) => ChatScreen(
-                                      friendName: name.toString(),
-                                      friendEmail: email,
-                                      friendAvatar:
-                                          contact['avatar']?.toString() ?? '',
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              PopupMenuButton<String>(
-                                onSelected: (value) async {
-                                  if (value == 'edit') {
-                                    _showEditContactDialog(docId, name);
-                                    return;
-                                  }
-                                  if (value == 'remove') {
-                                    _confirmRemoveContact(docId, email);
-                                    return;
-                                  }
-                                  if (value == 'mute_1h') {
-                                    await FirebaseService.muteTarget(
-                                      type: 'user',
-                                      targetId: email,
-                                      label: name.toString(),
-                                      duration: const Duration(hours: 1),
-                                    );
-                                    _showMessage('Đã tắt thông báo 1 giờ');
-                                    return;
-                                  }
-                                  if (value == 'mute_forever') {
-                                    await FirebaseService.muteTarget(
-                                      type: 'user',
-                                      targetId: email,
-                                      label: name.toString(),
-                                    );
-                                    _showMessage(
-                                      'Đã tắt thông báo cho đến khi mở lại',
-                                    );
-                                    return;
-                                  }
-                                  if (value == 'unmute') {
-                                    await FirebaseService.unmuteTarget(
-                                      type: 'user',
-                                      targetId: email,
-                                    );
-                                    _showMessage('Đã mở lại thông báo');
-                                    return;
-                                  }
-                                  if (value == 'block') {
-                                    final result =
-                                        await FirebaseService.blockUser(email);
-                                    _showMessage(
-                                      result == 'SUCCESS'
-                                          ? 'Đã chặn $email'
-                                          : result,
-                                      success: result == 'SUCCESS',
-                                    );
-                                  }
-                                },
-                                itemBuilder: (context) => [
-                                  const PopupMenuItem(
-                                    value: 'edit',
-                                    child: Text('Sửa tên hiển thị'),
-                                  ),
-                                  const PopupMenuItem(
-                                    value: 'remove',
-                                    child: Text('Hủy kết bạn'),
-                                  ),
-                                  const PopupMenuDivider(),
-                                  if (!isMuted)
-                                    const PopupMenuItem(
-                                      value: 'mute_1h',
-                                      child: Text('Tắt báo 1 giờ'),
-                                    ),
-                                  if (!isMuted)
-                                    const PopupMenuItem(
-                                      value: 'mute_forever',
-                                      child: Text('Tắt báo đến khi mở lại'),
-                                    ),
                                   if (isMuted)
-                                    const PopupMenuItem(
-                                      value: 'unmute',
-                                      child: Text('Mở lại thông báo'),
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 3,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: colorScheme.primaryContainer,
+                                          borderRadius: BorderRadius.circular(999),
+                                        ),
+                                        child: Text(
+                                          'Đang tắt thông báo',
+                                          style: TextStyle(
+                                            color: colorScheme.onPrimaryContainer,
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                  const PopupMenuDivider(),
-                                  const PopupMenuItem(
-                                    value: 'block',
-                                    child: Text('Chặn người này'),
+                                ],
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (lastMsgTime != null) ...[
+                                    Text(
+                                      _formatChatTime(lastMsgTime),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: unreadCount > 0 ? colorScheme.primary : colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+                                        fontWeight: unreadCount > 0 ? FontWeight.bold : FontWeight.normal,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ],
+                                  IconButton(
+                                    tooltip: 'Nhắn tin',
+                                    icon: const Icon(
+                                      Icons.chat_bubble_outline,
+                                      color: Colors.green,
+                                    ),
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (context) => ChatScreen(
+                                          friendName: name.toString(),
+                                          friendEmail: email,
+                                          friendAvatar:
+                                              contact['avatar']?.toString() ?? '',
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  PopupMenuButton<String>(
+                                    onSelected: (value) async {
+                                      if (value == 'edit') {
+                                        _showEditContactDialog(docId, name);
+                                        return;
+                                      }
+                                      if (value == 'remove') {
+                                        _confirmRemoveContact(docId, email);
+                                        return;
+                                      }
+                                      if (value == 'mute_1h') {
+                                        await FirebaseService.muteTarget(
+                                          type: 'user',
+                                          targetId: email,
+                                          label: name.toString(),
+                                          duration: const Duration(hours: 1),
+                                        );
+                                        _showMessage('Đã tắt thông báo 1 giờ');
+                                        return;
+                                      }
+                                      if (value == 'mute_forever') {
+                                        await FirebaseService.muteTarget(
+                                          type: 'user',
+                                          targetId: email,
+                                          label: name.toString(),
+                                        );
+                                        _showMessage(
+                                          'Đã tắt thông báo cho đến khi mở lại',
+                                        );
+                                        return;
+                                      }
+                                      if (value == 'unmute') {
+                                        await FirebaseService.unmuteTarget(
+                                          type: 'user',
+                                          targetId: email,
+                                        );
+                                        _showMessage('Đã mở lại thông báo');
+                                        return;
+                                      }
+                                      if (value == 'block') {
+                                        final result =
+                                            await FirebaseService.blockUser(email);
+                                        _showMessage(
+                                          result == 'SUCCESS'
+                                              ? 'Đã chặn $email'
+                                              : result,
+                                          success: result == 'SUCCESS',
+                                        );
+                                      }
+                                    },
+                                    itemBuilder: (context) => [
+                                      const PopupMenuItem(
+                                        value: 'edit',
+                                        child: Text('Sửa tên hiển thị'),
+                                      ),
+                                      const PopupMenuItem(
+                                        value: 'remove',
+                                        child: Text('Hủy kết bạn'),
+                                      ),
+                                      const PopupMenuDivider(),
+                                      if (!isMuted)
+                                        const PopupMenuItem(
+                                          value: 'mute_1h',
+                                          child: Text('Tắt báo 1 giờ'),
+                                        ),
+                                      if (!isMuted)
+                                        const PopupMenuItem(
+                                          value: 'mute_forever',
+                                          child: Text('Tắt báo đến khi mở lại'),
+                                        ),
+                                      if (isMuted)
+                                        const PopupMenuItem(
+                                          value: 'unmute',
+                                          child: Text('Mở lại thông báo'),
+                                        ),
+                                      const PopupMenuDivider(),
+                                      const PopupMenuItem(
+                                        value: 'block',
+                                        child: Text('Chặn người này'),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
-                            ],
-                          ),
-                          onLongPress: () {
-                            HapticFeedback.mediumImpact();
-                            _showContactQuickActions(
-                              docId,
-                              name.toString(),
-                              email,
-                              contact['avatar']?.toString() ?? '',
-                              contact['chatPinned'] == true,
-                              isMuted,
+                              onLongPress: () {
+                                HapticFeedback.mediumImpact();
+                                _showContactQuickActions(
+                                  docId,
+                                  name.toString(),
+                                  email,
+                                  contact['avatar']?.toString() ?? '',
+                                  contact['chatPinned'] == true,
+                                  isMuted,
+                                );
+                              },
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => ChatScreen(
+                                    friendName: name.toString(),
+                                    friendEmail: email,
+                                    friendAvatar:
+                                        contact['avatar']?.toString() ?? '',
+                                  ),
+                                ),
+                              ),
                             );
                           },
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => ChatScreen(
-                                friendName: name.toString(),
-                                friendEmail: email,
-                                friendAvatar:
-                                    contact['avatar']?.toString() ?? '',
-                              ),
-                            ),
-                          ),
                         );
                       },
                     );
@@ -820,32 +969,12 @@ class _ContactsScreenState extends State<ContactsScreen> {
   }
 
   void _showFullScreenImage(String imageUrl, String name) {
-    Navigator.push(
+    final imageProvider = CachedNetworkImageProvider(imageUrl);
+    showImageViewer(
       context,
-      MaterialPageRoute(
-        builder: (context) => Scaffold(
-          backgroundColor: Colors.black,
-          appBar: AppBar(
-            backgroundColor: Colors.black,
-            iconTheme: const IconThemeData(color: Colors.white),
-            title: Text(name, style: const TextStyle(color: Colors.white)),
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.contain,
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return const Center(child: CircularProgressIndicator(color: Colors.white));
-                },
-                errorBuilder: (context, error, stackTrace) =>
-                    const Icon(Icons.error, color: Colors.white, size: 50),
-              ),
-            ),
-          ),
-        ),
-      ),
+      imageProvider,
+      swipeDismissible: true,
+      doubleTapZoomable: true,
     );
   }
 }
@@ -939,7 +1068,11 @@ class _AddFriendDialogState extends State<_AddFriendDialog> {
     );
   }
 }
-
-
-
-
+
+
+
+
+
+
+
+

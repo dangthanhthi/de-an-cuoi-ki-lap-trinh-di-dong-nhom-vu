@@ -3,7 +3,7 @@ import 'package:provider/provider.dart';
 import '../../controllers/app_state.dart';
 import '../../controllers/note_provider.dart';
 
-class FilterSection extends StatelessWidget {
+class FilterSection extends StatefulWidget {
   final VoidCallback onShowAdvancedFilters;
   final VoidCallback onShowSort;
 
@@ -14,7 +14,28 @@ class FilterSection extends StatelessWidget {
   });
 
   @override
+  State<FilterSection> createState() => _FilterSectionState();
+}
+
+class _FilterSectionState extends State<FilterSection> {
+  final FocusNode _searchFocusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     final noteProvider = Provider.of<NoteProvider>(context);
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -26,6 +47,7 @@ class FilterSection extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: TextField(
+            focusNode: _searchFocusNode,
             onChanged: (val) => noteProvider.setSearchQuery(val),
             decoration: InputDecoration(
               hintText: 'Tìm kiếm ghi chú, công việc...',
@@ -56,7 +78,7 @@ class FilterSection extends StatelessWidget {
               _FilterActionButton(
                 icon: Icons.tune_rounded,
                 label: 'Bộ lọc',
-                onTap: onShowAdvancedFilters,
+                onTap: widget.onShowAdvancedFilters,
                 isActive: _hasActiveAdvancedFilters(noteProvider),
                 color: colorScheme.primary,
               ),
@@ -64,7 +86,7 @@ class FilterSection extends StatelessWidget {
               _FilterActionButton(
                 icon: Icons.sort_rounded,
                 label: 'Sắp xếp',
-                onTap: onShowSort,
+                onTap: widget.onShowSort,
                 color: colorScheme.secondary,
               ),
             ],

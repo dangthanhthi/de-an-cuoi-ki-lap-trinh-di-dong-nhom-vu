@@ -380,13 +380,14 @@ class FirebaseService {
       return true;
     }
 
-    // 2. Nếu là Admin hệ thống, luôn có quyền
-    if (AppState.currentUserRole.toLowerCase() == 'admin') {
+    final groupId = (noteData['groupId'] ?? '').toString();
+
+    // 2. Nếu là Admin hệ thống, có quyền quản lý đối với ghi chú cá nhân/chia sẻ ngoài nhóm
+    if (groupId.isEmpty && AppState.currentUserRole.toLowerCase() == 'admin') {
       return true;
     }
 
     // 3. Nếu là ghi chú trong nhóm, kiểm tra quyền Trưởng nhóm/Điều phối
-    final groupId = (noteData['groupId'] ?? '').toString();
     if (groupId.isNotEmpty) {
       return await canCurrentUserManageGroupTasks(groupId);
     }
@@ -706,11 +707,11 @@ class FirebaseService {
 
     final groupDoc = await _db.collection('groups').doc(groupId).get();
     final members = _groupMemberEmails(groupDoc.data() ?? <String, dynamic>{});
-    final Map<String, dynamic> unreadUpdates = {};
+    final Map<Object, dynamic> unreadUpdates = {};
     for (var m in members) {
       final email = m.toString().toLowerCase().trim();
       if (email != AppState.currentUserEmail.toLowerCase().trim()) {
-        unreadUpdates['unreadCount.$email'] = FieldValue.increment(1);
+        unreadUpdates[FieldPath(['unreadCount', email])] = FieldValue.increment(1);
       }
     }
 
@@ -994,6 +995,29 @@ class FirebaseService {
       throw Exception('Ghi chú không tồn tại hoặc đã bị xóa.');
     }
     final beforeData = beforeDoc.data();
+    
+    final createdByEmail = (beforeData?['createdByEmail'] ?? '').toString().toLowerCase().trim();
+    final beforeUserId = (beforeData?['userId'] ?? '').toString();
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    final isOwner = (createdByEmail.isNotEmpty && createdByEmail == myEmail) ||
+                    (beforeUserId.isNotEmpty && beforeUserId == currentUid);
+    final isAdmin = AppState.currentUserRole.toLowerCase() == 'admin';
+
+    if (note.groupId.isNotEmpty) {
+      final isGroupManager = await canCurrentUserManageGroupTasks(note.groupId);
+      if (!isOwner && !isAdmin && !isGroupManager) {
+        throw Exception('Bạn không có quyền chỉnh sửa ghi chú nhóm này.');
+      }
+    } else {
+      if (!isOwner && !isAdmin) {
+        final sharedWith = List<String>.from(beforeData?['sharedWith'] ?? const <String>[]);
+        final isSharedWithMe = sharedWith.any((e) => e.toLowerCase().trim() == myEmail);
+        if (!isSharedWithMe) {
+          throw Exception('Bạn không có quyền chỉnh sửa ghi chú này.');
+        }
+      }
+    }
+
     final previousAttachments = List<String>.from(
       beforeData?['attachments'] ?? const <String>[],
     );
@@ -1024,8 +1048,8 @@ class FirebaseService {
       attachments: note.attachments,
       isPinned: note.isPinned,
       priority: note.priority,
-      createdByEmail: note.createdByEmail,
-      createdByName: note.createdByName,
+      createdByEmail: note.createdByEmail.isNotEmpty ? note.createdByEmail : myEmail,
+      createdByName: note.createdByName.isNotEmpty ? note.createdByName : AppState.currentUserName,
       groupId: note.groupId,
       groupName: groupName,
       titleTextColor: note.titleTextColor,
@@ -1387,95 +1411,14 @@ class FirebaseService {
     return controller.stream;
   }
 
-  static Stream<QuerySnapshot> getNoteInvitesStream() {
-    return _db
-        .collection('note_invites')
-        .where('toEmail', isEqualTo: AppState.currentUserEmail.toLowerCase())
-        .where('status', isEqualTo: 'pending')
-        .snapshots();
-  }
+  static Stream<QuerySnapshot> getNoteInvitesStream() =>
+      NoteService.getNoteInvitesStream();
 
-  static Future<String> shareNote(String noteId, String targetEmail) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    final email = targetEmail.toLowerCase().trim();
-    if (email == AppState.currentUserEmail.toLowerCase().trim()) {
-      return "Không thể chia sẻ cho chính mình";
-    }
+  static Future<String> shareNote(String noteId, String targetEmail) =>
+      NoteService.shareNote(noteId, targetEmail);
 
-    try {
-      final noteDoc = await _db.collection('notes').doc(noteId).get();
-      if (!noteDoc.exists) return "Ghi chú không tồn tại";
-
-      final data = noteDoc.data()!;
-      if (data['userId'] != currentUid) {
-        return "Chỉ chủ sở hữu mới được chia sẻ";
-      }
-
-      final sharedWith = List<String>.from(data['sharedWith'] ?? []);
-      if (sharedWith.contains(email)) return "Đã chia sẻ cho người này rồi";
-
-      // Check for existing invite
-      final existing = await _db
-          .collection('note_invites')
-          .where('noteId', isEqualTo: noteId)
-          .where('toEmail', isEqualTo: email)
-          .where('status', isEqualTo: 'pending')
-          .get();
-      if (existing.docs.isNotEmpty) return "Đã gửi lời mời cho người này rồi";
-
-      await _db.collection('note_invites').add({
-        'noteId': noteId,
-        'noteTitle': data['title'] ?? 'Ghi chú không tiêu đề',
-        'fromEmail': AppState.currentUserEmail,
-        'fromName': AppState.currentUserName,
-        'toEmail': email,
-        'status': 'pending',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      return "SUCCESS";
-    } catch (e) {
-      debugPrint("Share Note Error: $e");
-      return "Lỗi khi chia sẻ ghi chú: ${e.toString()}";
-    }
-  }
-
-  static Future<String> respondToNoteInvite(
-    String inviteId,
-    bool accept,
-  ) async {
-    if (currentUid.isEmpty) return "Chưa đăng nhập";
-    try {
-      final inviteRef = _db.collection('note_invites').doc(inviteId);
-      final inviteDoc = await inviteRef.get();
-      if (!inviteDoc.exists) return "Lời mời không tồn tại";
-
-      final data = inviteDoc.data()!;
-      if (data['toEmail'] != AppState.currentUserEmail.toLowerCase()) {
-        return "Bạn không có quyền thực hiện hành động này";
-      }
-
-      if (accept) {
-        final noteId = data['noteId'];
-        final noteDoc = await _db.collection('notes').doc(noteId).get();
-        if (!noteDoc.exists) {
-          await inviteRef.delete();
-          return "Ghi chú này đã bị người chia sẻ xóa.";
-        }
-        await _db.collection('notes').doc(noteId).update({
-          'sharedWith': FieldValue.arrayUnion([
-            AppState.currentUserEmail.toLowerCase(),
-          ]),
-        });
-        await inviteRef.update({'status': 'accepted'});
-      } else {
-        await inviteRef.update({'status': 'rejected'});
-      }
-      return "SUCCESS";
-    } catch (e) {
-      return "Lỗi phản hồi lời mời: $e";
-    }
-  }
+  static Future<String> respondToNoteInvite(String inviteId, bool accept) =>
+      NoteService.respondToNoteInvite(inviteId, accept);
 
   static Future<String> uploadGroupAvatar(
     File file,
@@ -2197,7 +2140,7 @@ class FirebaseService {
       }
     }
 
-    controller = StreamController<List<Map<String, dynamic>>>(
+    controller = StreamController<List<Map<String, dynamic>>>.broadcast(
       onListen: () {
         groupSubscription = _db
             .collection('groups')
@@ -2279,7 +2222,7 @@ class FirebaseService {
         .collection('groups')
         .where(
           'members',
-          arrayContains: AppState.currentUserEmail.toLowerCase(),
+          arrayContains: AppState.currentUserEmail.toLowerCase().trim(),
         )
         .snapshots();
   }
@@ -2298,39 +2241,96 @@ class FirebaseService {
       final groupDoc = await _db.collection('groups').doc(groupId).get();
       if (!groupDoc.exists) return "Nhóm không tồn tại";
       final data = groupDoc.data()!;
-      if (data['leaderId'] != currentUid) {
-        return "Chỉ trưởng nhóm mới được mời thành viên";
+      
+      final members = _groupMemberEmails(data);
+      final isLeader = data['leaderId'] == currentUid;
+      final isMember = members.contains(myEmail) || isLeader;
+      if (!isMember) {
+        return "Bạn không phải thành viên của nhóm này";
       }
 
       if (email == myEmail) return "Bạn không thể mời chính mình vào nhóm";
-
-      final members = _groupMemberEmails(data);
       if (members.contains(email)) return "Người này đã có trong nhóm";
 
-      final existing = await _db
-          .collection('group_invites')
-          .where('groupId', isEqualTo: groupId)
-          .where('toEmail', isEqualTo: email)
-          .where('status', isEqualTo: 'pending')
-          .get();
-      if (existing.docs.isNotEmpty) return "Đã có lời mời đang chờ phản hồi";
+      final requiresApproval = data['requiresApproval'] == true;
+      final isManager = _groupManagerEmails(data).contains(myEmail);
+      final canManage = isLeader || isManager;
 
-      await _db.collection('group_invites').add({
-        'groupId': groupId,
-        'groupName': (data['name'] ?? 'Nhóm không tên').toString(),
-        'fromEmail': AppState.currentUserEmail,
-        'fromName': AppState.currentUserName,
-        'toEmail': email,
-        'status': 'pending',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      if (requiresApproval && !canManage) {
+        // Cần phê duyệt và người mời không phải trưởng nhóm/quản lý
+        final existingReq = await _db
+            .collection('group_requests')
+            .where('groupId', isEqualTo: groupId)
+            .where('userEmail', isEqualTo: email)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        if (existingReq.docs.isNotEmpty) return "Yêu cầu thêm người này đang chờ duyệt";
 
-      await saveActivity(
-        "Mời vào nhóm",
-        "Đã mời $email vào nhóm ${(data['name'] ?? '').toString()}",
-        groupId: groupId,
-      );
-      return "SUCCESS";
+        final existingInv = await _db
+            .collection('group_invites')
+            .where('groupId', isEqualTo: groupId)
+            .where('toEmail', isEqualTo: email)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        if (existingInv.docs.isNotEmpty) return "Đã có lời mời đang chờ phản hồi";
+
+        // Tìm thông tin tên/avatar người được mời nếu đã có tài khoản
+        final userQuery = await _db.collection('users').where('email', isEqualTo: email).get();
+        String name = email;
+        String avatar = "https://ui-avatars.com/api/?background=random";
+        if (userQuery.docs.isNotEmpty) {
+          final uData = userQuery.docs.first.data();
+          name = (uData['name'] ?? email).toString();
+          avatar = (uData['avatar'] ?? avatar).toString();
+        }
+
+        await _db.collection('group_requests').add({
+          'groupId': groupId,
+          'groupName': (data['name'] ?? 'Nhóm không tên').toString(),
+          'leaderId': data['leaderId'],
+          'userEmail': email,
+          'userName': name,
+          'userAvatar': avatar,
+          'invitedBy': myEmail,
+          'invitedByName': AppState.currentUserName,
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        await saveActivity(
+          "Đề xuất thành viên mới",
+          "${AppState.currentUserName} đề xuất thêm $email vào nhóm",
+          groupId: groupId,
+        );
+
+        return "SUCCESS_PENDING_APPROVAL";
+      } else {
+        // Mời trực tiếp (không cần duyệt hoặc là trưởng nhóm/quản lý mời)
+        final existing = await _db
+            .collection('group_invites')
+            .where('groupId', isEqualTo: groupId)
+            .where('toEmail', isEqualTo: email)
+            .where('status', isEqualTo: 'pending')
+            .get();
+        if (existing.docs.isNotEmpty) return "Đã có lời mời đang chờ phản hồi";
+
+        await _db.collection('group_invites').add({
+          'groupId': groupId,
+          'groupName': (data['name'] ?? 'Nhóm không tên').toString(),
+          'fromEmail': AppState.currentUserEmail,
+          'fromName': AppState.currentUserName,
+          'toEmail': email,
+          'status': 'pending',
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        await saveActivity(
+          "Mời vào nhóm",
+          "Đã mời $email vào nhóm ${(data['name'] ?? '').toString()}",
+          groupId: groupId,
+        );
+        return "SUCCESS";
+      }
     } catch (e) {
       debugPrint("Add Member Error: $e");
       return "Lỗi khi mời thành viên: ${e.toString()}";
@@ -2870,45 +2870,62 @@ class FirebaseService {
     final groupInvites = getGroupInvitesStream();
     final groupRequests = getGroupRequestsForLeaderStream();
     final friendRequests = getFriendRequestsStream();
+    final unreadChats = unreadChatMessagesCountStream();
+    final unreadGroupChats = unreadGroupMessagesCountStream();
 
-    final controller = StreamController<int>.broadcast();
-    int countInvites = 0;
-    int countGroups = 0;
-    int countGroupReqs = 0;
-    int countFriends = 0;
+    late StreamController<int> controller;
+    controller = StreamController<int>.broadcast(
+      onListen: () {
+        int countInvites = 0;
+        int countGroups = 0;
+        int countGroupReqs = 0;
+        int countFriends = 0;
+        int countChats = 0;
+        int countGroupMsgs = 0;
 
-    void emitTotal() {
-      if (!controller.isClosed) {
-        controller.add(
-          countInvites + countGroups + countGroupReqs + countFriends,
-        );
-      }
-    }
+        void emitTotal() {
+          if (!controller.isClosed) {
+            controller.add(
+              countInvites + countGroups + countGroupReqs + countFriends + countChats + countGroupMsgs,
+            );
+          }
+        }
 
-    final sub1 = noteInvites.listen((s) {
-      countInvites = s.docs.length;
-      emitTotal();
-    });
-    final sub2 = groupInvites.listen((s) {
-      countGroups = s.docs.length;
-      emitTotal();
-    });
-    final sub3 = groupRequests.listen((s) {
-      countGroupReqs = s.docs.length;
-      emitTotal();
-    });
-    final sub4 = friendRequests.listen((s) {
-      countFriends = s.docs.length;
-      emitTotal();
-    });
+        final sub1 = noteInvites.listen((s) {
+          countInvites = s.docs.length;
+          emitTotal();
+        });
+        final sub2 = groupInvites.listen((s) {
+          countGroups = s.docs.length;
+          emitTotal();
+        });
+        final sub3 = groupRequests.listen((s) {
+          countGroupReqs = s.docs.length;
+          emitTotal();
+        });
+        final sub4 = friendRequests.listen((s) {
+          countFriends = s.docs.length;
+          emitTotal();
+        });
+        final sub5 = unreadChats.listen((c) {
+          countChats = c;
+          emitTotal();
+        });
+        final sub6 = unreadGroupChats.listen((g) {
+          countGroupMsgs = g;
+          emitTotal();
+        });
 
-    controller.onCancel = () {
-      sub1.cancel();
-      sub2.cancel();
-      sub3.cancel();
-      sub4.cancel();
-      controller.close();
-    };
+        controller.onCancel = () {
+          sub1.cancel();
+          sub2.cancel();
+          sub3.cancel();
+          sub4.cancel();
+          sub5.cancel();
+          sub6.cancel();
+        };
+      },
+    );
     return controller.stream;
   }
 
@@ -2926,65 +2943,80 @@ class FirebaseService {
         .collection('mutes')
         .snapshots();
 
-    final controller = StreamController<int>.broadcast();
-    Map<String, dynamic> chatUnreads = {};
-    Set<String> mutedIds = {};
+    late StreamController<int> controller;
+    controller = StreamController<int>.broadcast(
+      onListen: () {
+        Map<String, dynamic> chatUnreads = {};
+        Set<String> mutedIds = {};
 
-    void emitTotal() {
-      if (controller.isClosed) return;
-      int total = 0;
-      chatUnreads.forEach((chatId, countData) {
-        final participants = countData['participants'] as List<String>;
-        final friendEmail = participants.firstWhere(
-          (e) => e != myEmail,
-          orElse: () => '',
+        void emitTotal() {
+          if (controller.isClosed) return;
+          int total = 0;
+          chatUnreads.forEach((chatId, countData) {
+            final participants = countData['participants'] as List<String>;
+            final friendEmail = participants.firstWhere(
+              (e) => e != myEmail,
+              orElse: () => '',
+            );
+            if (friendEmail.isNotEmpty && !mutedIds.contains(friendEmail)) {
+              total +=
+                  1; // Count each conversation as 1, regardless of message count
+            }
+          });
+          controller.add(total);
+        }
+
+        final sub1 = chatsStream.listen(
+          (s) {
+            chatUnreads.clear();
+            for (var doc in s.docs) {
+              final data = doc.data();
+              final unread = (data['unreadCount']?[myEmail] ?? 0) as int;
+              if (unread > 0) {
+                chatUnreads[doc.id] = {
+                  'unread': unread,
+                  'participants': List<String>.from(data['participants'] ?? []),
+                };
+              }
+            }
+            emitTotal();
+          },
+          onError: (err) {
+            debugPrint('DEBUG: chatsStream error in unreadChatMessagesCountStream: $err');
+            if (!controller.isClosed) controller.addError(err);
+          },
         );
-        if (friendEmail.isNotEmpty && !mutedIds.contains(friendEmail)) {
-          total +=
-              1; // Count each conversation as 1, regardless of message count
-        }
-      });
-      controller.add(total);
-    }
 
-    final sub1 = chatsStream.listen((s) {
-      chatUnreads.clear();
-      for (var doc in s.docs) {
-        final data = doc.data();
-        final unread = (data['unreadCount']?[myEmail] ?? 0) as int;
-        if (unread > 0) {
-          chatUnreads[doc.id] = {
-            'unread': unread,
-            'participants': List<String>.from(data['participants'] ?? []),
-          };
-        }
-      }
-      emitTotal();
-    });
+        final sub2 = mutesStream.listen(
+          (s) {
+            mutedIds.clear();
+            for (var doc in s.docs) {
+              final data = doc.data();
+              final until = data['muteUntil'];
+              bool isActive = true;
+              if (until is Timestamp) {
+                isActive = until.toDate().isAfter(DateTime.now());
+              }
+              if (isActive) {
+                mutedIds.add(
+                  (data['targetId'] ?? '').toString().toLowerCase().trim(),
+                );
+              }
+            }
+            emitTotal();
+          },
+          onError: (err) {
+            debugPrint('DEBUG: mutesStream error in unreadChatMessagesCountStream: $err');
+            if (!controller.isClosed) controller.addError(err);
+          },
+        );
 
-    final sub2 = mutesStream.listen((s) {
-      mutedIds.clear();
-      for (var doc in s.docs) {
-        final data = doc.data();
-        final until = data['muteUntil'];
-        bool isActive = true;
-        if (until is Timestamp) {
-          isActive = until.toDate().isAfter(DateTime.now());
-        }
-        if (isActive) {
-          mutedIds.add(
-            (data['targetId'] ?? '').toString().toLowerCase().trim(),
-          );
-        }
-      }
-      emitTotal();
-    });
-
-    controller.onCancel = () {
-      sub1.cancel();
-      sub2.cancel();
-      controller.close();
-    };
+        controller.onCancel = () {
+          sub1.cancel();
+          sub2.cancel();
+        };
+      },
+    );
     return controller.stream;
   }
 
@@ -3001,54 +3033,69 @@ class FirebaseService {
         .collection('mutes')
         .snapshots();
 
-    final controller = StreamController<int>.broadcast();
-    Map<String, int> groupUnreads = {};
-    Set<String> mutedIds = {};
+    late StreamController<int> controller;
+    controller = StreamController<int>.broadcast(
+      onListen: () {
+        Map<String, int> groupUnreads = {};
+        Set<String> mutedIds = {};
 
-    void emitTotal() {
-      if (controller.isClosed) return;
-      int total = 0;
-      groupUnreads.forEach((groupId, val) {
-        if (!mutedIds.contains(groupId)) {
-          total += val;
+        void emitTotal() {
+          if (controller.isClosed) return;
+          int total = 0;
+          groupUnreads.forEach((groupId, val) {
+            if (!mutedIds.contains(groupId)) {
+              total += 1; // Count each group with unread messages as 1
+            }
+          });
+          controller.add(total);
         }
-      });
-      controller.add(total);
-    }
 
-    final sub1 = groupsStream.listen((s) {
-      groupUnreads.clear();
-      for (var doc in s.docs) {
-        final data = doc.data();
-        final unread = (data['unreadCount']?[myEmail] ?? 0) as int;
-        if (unread > 0) groupUnreads[doc.id] = unread;
-      }
-      emitTotal();
-    });
+        final sub1 = groupsStream.listen(
+          (s) {
+            groupUnreads.clear();
+            for (var doc in s.docs) {
+              final data = doc.data();
+              final unread = (data['unreadCount']?[myEmail] ?? 0) as int;
+              if (unread > 0) groupUnreads[doc.id] = unread;
+            }
+            emitTotal();
+          },
+          onError: (err) {
+            debugPrint('DEBUG: groupsStream error in unreadGroupMessagesCountStream: $err');
+            if (!controller.isClosed) controller.addError(err);
+          },
+        );
 
-    final sub2 = mutesStream.listen((s) {
-      mutedIds.clear();
-      for (var doc in s.docs) {
-        final data = doc.data();
-        final until = data['muteUntil'];
-        bool isActive = true;
-        if (until is Timestamp) {
-          isActive = until.toDate().isAfter(DateTime.now());
-        }
-        if (isActive) {
-          mutedIds.add(
-            (data['targetId'] ?? '').toString().toLowerCase().trim(),
-          );
-        }
-      }
-      emitTotal();
-    });
+        final sub2 = mutesStream.listen(
+          (s) {
+            mutedIds.clear();
+            for (var doc in s.docs) {
+              final data = doc.data();
+              final until = data['muteUntil'];
+              bool isActive = true;
+              if (until is Timestamp) {
+                isActive = until.toDate().isAfter(DateTime.now());
+              }
+              if (isActive) {
+                mutedIds.add(
+                  (data['targetId'] ?? '').toString().toLowerCase().trim(),
+                );
+              }
+            }
+            emitTotal();
+          },
+          onError: (err) {
+            debugPrint('DEBUG: mutesStream error in unreadGroupMessagesCountStream: $err');
+            if (!controller.isClosed) controller.addError(err);
+          },
+        );
 
-    controller.onCancel = () {
-      sub1.cancel();
-      sub2.cancel();
-      controller.close();
-    };
+        controller.onCancel = () {
+          sub1.cancel();
+          sub2.cancel();
+        };
+      },
+    );
     return controller.stream;
   }
 
@@ -3066,53 +3113,56 @@ class FirebaseService {
         .where('assigneeEmails', arrayContains: myEmail)
         .snapshots();
 
-    final controller = StreamController<int>.broadcast();
-    Map<String, bool> sharedUnreads = {};
-    Map<String, bool> assignedUnreads = {};
+    late StreamController<int> controller;
+    controller = StreamController<int>.broadcast(
+      onListen: () {
+        Map<String, bool> sharedUnreads = {};
+        Map<String, bool> assignedUnreads = {};
 
-    void emitTotal() {
-      if (controller.isClosed) return;
-      final allUnreadIds = <String>{};
-      sharedUnreads.forEach((id, isUnread) {
-        if (isUnread) allUnreadIds.add(id);
-      });
-      assignedUnreads.forEach((id, isUnread) {
-        if (isUnread) allUnreadIds.add(id);
-      });
-      controller.add(allUnreadIds.length);
-    }
-
-    final s1 = sharedStream.listen((snap) {
-      sharedUnreads.clear();
-      for (var doc in snap.docs) {
-        final data = doc.data();
-        final viewedBy = List<String>.from(data['viewedBy'] ?? []);
-        final hiddenBy = List<String>.from(data['hiddenBy'] ?? []);
-        if (!hiddenBy.contains(myEmail)) {
-          sharedUnreads[doc.id] = !viewedBy.contains(myEmail);
+        void emitTotal() {
+          if (controller.isClosed) return;
+          final allUnreadIds = <String>{};
+          sharedUnreads.forEach((id, isUnread) {
+            if (isUnread) allUnreadIds.add(id);
+          });
+          assignedUnreads.forEach((id, isUnread) {
+            if (isUnread) allUnreadIds.add(id);
+          });
+          controller.add(allUnreadIds.length);
         }
-      }
-      emitTotal();
-    });
 
-    final s2 = assignedStream.listen((snap) {
-      assignedUnreads.clear();
-      for (var doc in snap.docs) {
-        final data = doc.data();
-        final viewedBy = List<String>.from(data['viewedBy'] ?? []);
-        final hiddenBy = List<String>.from(data['hiddenBy'] ?? []);
-        if (!hiddenBy.contains(myEmail)) {
-          assignedUnreads[doc.id] = !viewedBy.contains(myEmail);
-        }
-      }
-      emitTotal();
-    });
+        final s1 = sharedStream.listen((snap) {
+          sharedUnreads.clear();
+          for (var doc in snap.docs) {
+            final data = doc.data();
+            final viewedBy = List<String>.from(data['viewedBy'] ?? []);
+            final hiddenBy = List<String>.from(data['hiddenBy'] ?? []);
+            if (!hiddenBy.contains(myEmail)) {
+              sharedUnreads[doc.id] = !viewedBy.contains(myEmail);
+            }
+          }
+          emitTotal();
+        });
 
-    controller.onCancel = () {
-      s1.cancel();
-      s2.cancel();
-      controller.close();
-    };
+        final s2 = assignedStream.listen((snap) {
+          assignedUnreads.clear();
+          for (var doc in snap.docs) {
+            final data = doc.data();
+            final viewedBy = List<String>.from(data['viewedBy'] ?? []);
+            final hiddenBy = List<String>.from(data['hiddenBy'] ?? []);
+            if (!hiddenBy.contains(myEmail)) {
+              assignedUnreads[doc.id] = !viewedBy.contains(myEmail);
+            }
+          }
+          emitTotal();
+        });
+
+        controller.onCancel = () {
+          s1.cancel();
+          s2.cancel();
+        };
+      },
+    );
     return controller.stream;
   }
 
@@ -3121,36 +3171,39 @@ class FirebaseService {
     final groupStream = unreadGroupMessagesCountStream();
     final sharedNotesStream = unreadSharedNotesCountStream();
 
-    final controller = StreamController<int>.broadcast();
-    int chatCount = 0;
-    int groupCount = 0;
-    int sharedCount = 0;
+    late StreamController<int> controller;
+    controller = StreamController<int>.broadcast(
+      onListen: () {
+        int chatCount = 0;
+        int groupCount = 0;
+        int sharedCount = 0;
 
-    void emit() {
-      if (!controller.isClosed) {
-        controller.add(chatCount + groupCount + sharedCount);
-      }
-    }
+        void emit() {
+          if (!controller.isClosed) {
+            controller.add(chatCount + groupCount + sharedCount);
+          }
+        }
 
-    final s1 = chatStream.listen((c) {
-      chatCount = c;
-      emit();
-    });
-    final s2 = groupStream.listen((g) {
-      groupCount = g;
-      emit();
-    });
-    final s3 = sharedNotesStream.listen((s) {
-      sharedCount = s;
-      emit();
-    });
+        final s1 = chatStream.listen((c) {
+          chatCount = c;
+          emit();
+        });
+        final s2 = groupStream.listen((g) {
+          groupCount = g;
+          emit();
+        });
+        final s3 = sharedNotesStream.listen((s) {
+          sharedCount = s;
+          emit();
+        });
 
-    controller.onCancel = () {
-      s1.cancel();
-      s2.cancel();
-      s3.cancel();
-      controller.close();
-    };
+        controller.onCancel = () {
+          s1.cancel();
+          s2.cancel();
+          s3.cancel();
+        };
+      },
+    );
     return controller.stream;
   }
 
@@ -3198,7 +3251,7 @@ class FirebaseService {
             orElse: () => '',
           );
           if (otherEmail.isNotEmpty && !mutedIds.contains(otherEmail)) {
-            unreadMessages += unread;
+            unreadMessages += 1; // Count each chat with unread messages as 1
           }
         }
       }
@@ -3213,7 +3266,7 @@ class FirebaseService {
         final data = doc.data();
         final unread = (data['unreadCount']?[myEmail] ?? 0) as int;
         if (unread > 0 && !mutedIds.contains(doc.id)) {
-          unreadGroupMessages += unread;
+          unreadGroupMessages += 1; // Count each group with unread messages as 1
         }
       }
 
@@ -3226,7 +3279,7 @@ class FirebaseService {
       // 5. Note Invites
       final noteInvites = await _db
           .collection('note_invites')
-          .where('toEmail', isEqualTo: myEmail)
+          .where('targetEmail', isEqualTo: myEmail)
           .where('status', isEqualTo: 'pending')
           .get();
 

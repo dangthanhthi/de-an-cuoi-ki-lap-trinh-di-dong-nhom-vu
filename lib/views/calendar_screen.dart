@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:table_calendar/table_calendar.dart';
 
 import '../controllers/app_state.dart';
 import '../models/app_models.dart';
@@ -13,11 +14,20 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
-  DateTime _visibleMonth = DateTime(DateTime.now().year, DateTime.now().month);
+  DateTime _focusedDay = DateTime.now();
   DateTime _selectedDay = DateTime.now();
+  CalendarFormat _calendarFormat = CalendarFormat.month;
+  late Stream<QuerySnapshot> _myNotesStream;
+  late Stream<QuerySnapshot> _sharedNotesStream;
+  late Stream<QuerySnapshot> _myGroupsStream;
 
-  bool _isSameDay(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
+  @override
+  void initState() {
+    super.initState();
+    _myNotesStream = FirebaseService.getMyNotesStream();
+    _sharedNotesStream = FirebaseService.getSharedNotesStream();
+    _myGroupsStream = FirebaseService.getMyGroupsStream();
+  }
 
   List<Note> _dedupeNotes(List<Note> notes) {
     final map = <String, Note>{};
@@ -59,6 +69,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return events;
   }
 
+  List<_CalendarEvent> _getEventsForDay(DateTime day, List<_CalendarEvent> allEvents) {
+    return allEvents.where((event) => isSameDay(event.date, day)).toList();
+  }
+
   Future<List<Note>> _loadGroupNotes(List<QueryDocumentSnapshot> groups) async {
     final groupNotes = await Future.wait(
       groups.map((group) => FirebaseService.getGroupNotesOnce(group.id)),
@@ -66,25 +80,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return groupNotes.expand((notes) => notes).toList();
   }
 
-  void _moveMonth(int delta) {
-    setState(() {
-      _visibleMonth = DateTime(_visibleMonth.year, _visibleMonth.month + delta);
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Lịch nhắc việc')),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseService.getMyNotesStream(),
+        stream: _myNotesStream,
         builder: (context, mySnapshot) {
           return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getSharedNotesStream(),
+            stream: _sharedNotesStream,
             builder: (context, sharedSnapshot) {
               return StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.getMyGroupsStream(),
+                stream: _myGroupsStream,
                 builder: (context, groupSnapshot) {
+                  if (mySnapshot.hasError || sharedSnapshot.hasError || groupSnapshot.hasError) {
+                    final err = mySnapshot.error ?? sharedSnapshot.error ?? groupSnapshot.error;
+                    debugPrint('Error in calendar screen streams: $err');
+                    return const Center(child: Text('Không tải được dữ liệu nhắc việc'));
+                  }
                   if (mySnapshot.connectionState == ConnectionState.waiting ||
                       sharedSnapshot.connectionState ==
                           ConnectionState.waiting ||
@@ -105,6 +118,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   return FutureBuilder<List<Note>>(
                     future: _loadGroupNotes(groupSnapshot.data?.docs ?? []),
                     builder: (context, groupNotesSnapshot) {
+                      if (groupNotesSnapshot.hasError) {
+                        debugPrint('Error loading group notes for calendar: ${groupNotesSnapshot.error}');
+                        return const Center(child: Text('Không tải được dữ liệu nhóm'));
+                      }
                       if (groupNotesSnapshot.connectionState ==
                           ConnectionState.waiting) {
                         return const Center(child: CircularProgressIndicator());
@@ -128,123 +145,86 @@ class _CalendarScreenState extends State<CalendarScreen> {
   Widget _buildCalendar(List<Note> notes) {
     final colorScheme = Theme.of(context).colorScheme;
     final events = _eventsFromNotes(notes);
-    final selectedEvents = events
-        .where((event) => _isSameDay(event.date, _selectedDay))
-        .toList();
-    final daysInMonth = DateTime(
-      _visibleMonth.year,
-      _visibleMonth.month + 1,
-      0,
-    ).day;
-    final firstWeekday = DateTime(
-      _visibleMonth.year,
-      _visibleMonth.month,
-      1,
-    ).weekday;
-    final leadingBlankCount = firstWeekday - 1;
+    final selectedEvents = _getEventsForDay(_selectedDay, events);
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-          child: Row(
-            children: [
-              IconButton(
-                onPressed: () => _moveMonth(-1),
-                icon: const Icon(Icons.chevron_left),
-              ),
-              Expanded(
-                child: Center(
-                  child: Text(
-                    'Tháng ${_visibleMonth.month}/${_visibleMonth.year}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-              ),
-              IconButton(
-                onPressed: () => _moveMonth(1),
-                icon: const Icon(Icons.chevron_right),
-              ),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: const [
-              _WeekdayLabel('T2'),
-              _WeekdayLabel('T3'),
-              _WeekdayLabel('T4'),
-              _WeekdayLabel('T5'),
-              _WeekdayLabel('T6'),
-              _WeekdayLabel('T7'),
-              _WeekdayLabel('CN'),
-            ],
-          ),
-        ),
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(12),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 7,
-            mainAxisSpacing: 6,
-            crossAxisSpacing: 6,
-          ),
-          itemCount: leadingBlankCount + daysInMonth,
-          itemBuilder: (context, index) {
-            if (index < leadingBlankCount) return const SizedBox.shrink();
-            final day = index - leadingBlankCount + 1;
-            final date = DateTime(_visibleMonth.year, _visibleMonth.month, day);
-            final dayEvents = events
-                .where((event) => _isSameDay(event.date, date))
-                .toList();
-            final isSelected = _isSameDay(date, _selectedDay);
-            final isToday = _isSameDay(date, DateTime.now());
-            return InkWell(
-              borderRadius: BorderRadius.circular(12),
-              onTap: () => setState(() => _selectedDay = date),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: isSelected
-                      ? colorScheme.primaryContainer
-                      : colorScheme.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: isToday ? colorScheme.primary : Colors.transparent,
-                  ),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      '$day',
-                      style: TextStyle(
-                        fontWeight: isSelected
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                      ),
-                    ),
-                    if (dayEvents.isNotEmpty)
-                      Container(
-                        margin: const EdgeInsets.only(top: 4),
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: dayEvents.any((event) => event.isOverdue)
-                              ? Colors.red
-                              : colorScheme.primary,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            );
+        TableCalendar<_CalendarEvent>(
+          firstDay: DateTime.utc(2020, 1, 1),
+          lastDay: DateTime.utc(2030, 12, 31),
+          focusedDay: _focusedDay,
+          selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+          onDaySelected: (selectedDay, focusedDay) {
+            setState(() {
+              _selectedDay = selectedDay;
+              _focusedDay = focusedDay;
+            });
           },
+          calendarFormat: _calendarFormat,
+          onFormatChanged: (format) {
+            setState(() {
+              _calendarFormat = format;
+            });
+          },
+          onPageChanged: (focusedDay) {
+            _focusedDay = focusedDay;
+          },
+          eventLoader: (day) => _getEventsForDay(day, events),
+          startingDayOfWeek: StartingDayOfWeek.monday,
+          headerStyle: HeaderStyle(
+            formatButtonVisible: true,
+            titleCentered: true,
+            formatButtonDecoration: BoxDecoration(
+              color: colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            formatButtonTextStyle: TextStyle(
+              color: colorScheme.onPrimaryContainer,
+              fontWeight: FontWeight.bold,
+            ),
+            leftChevronIcon: Icon(Icons.chevron_left, color: colorScheme.primary),
+            rightChevronIcon: Icon(Icons.chevron_right, color: colorScheme.primary),
+          ),
+          calendarStyle: CalendarStyle(
+            todayDecoration: BoxDecoration(
+              color: Colors.transparent,
+              shape: BoxShape.circle,
+              border: Border.all(color: colorScheme.primary, width: 2),
+            ),
+            todayTextStyle: TextStyle(
+              color: colorScheme.primary,
+              fontWeight: FontWeight.bold,
+            ),
+            selectedDecoration: BoxDecoration(
+              color: colorScheme.primaryContainer,
+              shape: BoxShape.circle,
+            ),
+            selectedTextStyle: TextStyle(
+              color: colorScheme.onPrimaryContainer,
+              fontWeight: FontWeight.bold,
+            ),
+            markersAlignment: Alignment.bottomCenter,
+            outsideDaysVisible: false,
+          ),
+          calendarBuilders: CalendarBuilders(
+            markerBuilder: (context, date, dayEvents) {
+              if (dayEvents.isEmpty) return const SizedBox.shrink();
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: dayEvents.take(3).map((event) {
+                  return Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 1.0, vertical: 2.0),
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: event.isOverdue ? Colors.red : colorScheme.primary,
+                      shape: BoxShape.circle,
+                    ),
+                  );
+                }).toList(),
+              );
+            },
+          ),
         ),
         const Divider(height: 1),
         Expanded(
@@ -256,6 +236,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   itemBuilder: (context, index) {
                     final event = selectedEvents[index];
                     return Card(
+                      elevation: 0,
+                      color: colorScheme.surfaceContainerLow,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        side: BorderSide(
+                          color: colorScheme.outlineVariant.withValues(alpha: 0.5),
+                        ),
+                      ),
                       child: ListTile(
                         leading: Icon(
                           event.isOverdue
@@ -265,7 +253,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               ? colorScheme.error
                               : colorScheme.primary,
                         ),
-                        title: Text(event.title),
+                        title: Text(
+                          event.title,
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
                         subtitle: Text(event.subtitle),
                         onTap: () => Navigator.push(
                           context,
@@ -280,27 +271,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
         ),
       ],
-    );
-  }
-}
-
-class _WeekdayLabel extends StatelessWidget {
-  final String text;
-
-  const _WeekdayLabel(this.text);
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Center(
-        child: Text(
-          text,
-          style: TextStyle(
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
     );
   }
 }
@@ -320,5 +290,3 @@ class _CalendarEvent {
     this.isOverdue = false,
   });
 }
-
-

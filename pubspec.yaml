@@ -33,6 +33,14 @@ dependencies:
   google_fonts: ^6.2.1
   provider: ^6.1.2
   animate_do: ^3.3.4
+  cached_network_image: ^3.3.1
+  shimmer: ^3.0.0
+  easy_image_viewer: ^1.2.0
+  table_calendar: ^3.0.9
+  fl_chart: ^0.66.0
+  confetti: ^0.7.0
+  http: ^1.2.1
+
 
 dev_dependencies:
   flutter_test:

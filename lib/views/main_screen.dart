@@ -3,8 +3,11 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../controllers/app_state.dart';
+import '../controllers/note_provider.dart';
 import '../controllers/notification_service.dart';
 import '../models/app_models.dart';
 import 'home_screen.dart';
@@ -39,11 +42,28 @@ class _MainScreenState extends State<MainScreen> {
   @override
   void initState() {
     super.initState();
+    _loadSeenOverdueTodos();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _watchRealtimeNotifications();
       _startPresenceHeartbeat();
       _showLoginSummary();
     });
+  }
+
+  Future<void> _loadSeenOverdueTodos() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = prefs.getStringList('seen_overdue_todos') ?? [];
+    if (mounted) {
+      setState(() {
+        _seenOverdueTodos.addAll(list);
+      });
+    }
+  }
+
+  Future<void> _saveSeenOverdueTodo(String key) async {
+    _seenOverdueTodos.add(key);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList('seen_overdue_todos', _seenOverdueTodos.toList());
   }
 
   @override
@@ -126,6 +146,7 @@ class _MainScreenState extends State<MainScreen> {
             id: doc.id.hashCode,
             title: 'Lời mời kết bạn mới',
             body: '${data['fromName'] ?? fromEmail} muốn kết bạn với bạn',
+            payload: 'requests',
           );
         }
       }),
@@ -156,6 +177,7 @@ class _MainScreenState extends State<MainScreen> {
             id: doc.id.hashCode,
             title: 'Bạn có ghi chú mới',
             body: data['title'] ?? 'Một ghi chú vừa được chia sẻ với bạn',
+            payload: 'note:${doc.id}',
           );
         }
       }),
@@ -174,6 +196,7 @@ class _MainScreenState extends State<MainScreen> {
             id: doc.id.hashCode,
             title: 'Lời mời cộng tác',
             body: '${data['fromName'] ?? 'Ai đó'} mời bạn cộng tác trong ghi chú: ${data['noteTitle'] ?? ''}',
+            payload: 'requests',
           );
         }
       }),
@@ -202,6 +225,7 @@ class _MainScreenState extends State<MainScreen> {
                     id: groupId.hashCode,
                     title: 'Tin nhắn nhóm: ${groupData['name'] ?? 'Nhóm'}',
                     body: lastMsg,
+                    payload: 'group:$groupId',
                   );
                 }
               });
@@ -241,6 +265,7 @@ class _MainScreenState extends State<MainScreen> {
                 id: noteDoc.id.hashCode,
                 title: 'Ghi chú mới trong ${groupData['name'] ?? 'nhóm'}',
                 body: data['title'] ?? 'Nhóm vừa có ghi chú mới',
+                payload: 'note:${noteDoc.id}',
               );
             }
           });
@@ -275,6 +300,7 @@ class _MainScreenState extends State<MainScreen> {
                     id: chatId.hashCode,
                     title: 'Tin nhắn mới',
                     body: lastMsg,
+                    payload: 'chat:$lastSender',
                   );
                 }
               });
@@ -298,6 +324,7 @@ class _MainScreenState extends State<MainScreen> {
             id: doc.id.hashCode,
             title: 'Lời mời vào nhóm',
             body: '${data['fromName'] ?? 'Ai đó'} mời bạn vào nhóm: ${data['groupName'] ?? ''}',
+            payload: 'requests',
           );
         }
       }),
@@ -316,6 +343,7 @@ class _MainScreenState extends State<MainScreen> {
             id: doc.id.hashCode,
             title: 'Yêu cầu vào nhóm mới',
             body: '${data['userName'] ?? 'Ai đó'} muốn tham gia nhóm: ${data['groupName'] ?? ''}',
+            payload: 'requests',
           );
         }
       }),
@@ -396,12 +424,14 @@ class _MainScreenState extends State<MainScreen> {
 
         final key =
             '${note.id}:$index:${todo.deadline?.toIso8601String() ?? ''}';
-        if (!_seenOverdueTodos.add(key)) continue;
+        if (_seenOverdueTodos.contains(key)) continue;
+        await _saveSeenOverdueTodo(key);
 
         await NotificationService.showNow(
           id: key.hashCode,
           title: 'Todo trễ hạn${groupName.isEmpty ? '' : ' - $groupName'}',
           body: '${todo.task} (${note.title})',
+          payload: 'note:${note.id}',
         );
       }
     }
@@ -413,7 +443,14 @@ class _MainScreenState extends State<MainScreen> {
       body: IndexedStack(index: _currentIndex, children: _screens),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
-        onDestinationSelected: (index) => setState(() => _currentIndex = index),
+        onDestinationSelected: (index) {
+          if (index == 0 && _currentIndex != 0) {
+            try {
+              Provider.of<NoteProvider>(context, listen: false).triggerAnimation();
+            } catch (_) {}
+          }
+          setState(() => _currentIndex = index);
+        },
         destinations: [
           NavigationDestination(
             icon: Icon(Icons.home_outlined),

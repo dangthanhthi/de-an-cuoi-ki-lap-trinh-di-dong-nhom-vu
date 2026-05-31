@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../controllers/app_state.dart';
+import '../utils/snack_utils.dart';
 
 class AppSettingsScreen extends StatefulWidget {
   const AppSettingsScreen({super.key});
@@ -17,10 +18,14 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
   PermissionStatus? _microphoneStatus;
   PermissionStatus? _storageStatus;
   bool _isSavingSettings = false;
+  late Stream<QuerySnapshot> _mutesStream;
+  late Stream<QuerySnapshot> _blocksStream;
 
   @override
   void initState() {
     super.initState();
+    _mutesStream = FirebaseService.getMyMutesStream();
+    _blocksStream = FirebaseService.getMyBlocksStream();
     _loadStatuses();
   }
 
@@ -62,11 +67,12 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
     await _loadStatuses();
     if (!mounted) return;
     if (status.isPermanentlyDenied) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Bạn cần bật quyền này trong cài đặt hệ thống.'),
-          action: SnackBarAction(label: 'Mở', onPressed: openAppSettings),
-        ),
+      SnackUtils.show(
+        context,
+        'Bạn cần bật quyền này trong cài đặt hệ thống.',
+        success: false,
+        actionLabel: 'Mở',
+        onActionPressed: openAppSettings,
       );
     }
   }
@@ -103,12 +109,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
       await _loadStatuses();
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('Không thể lưu cài đặt. Vui lòng thử lại.'),
-        backgroundColor: Theme.of(context).colorScheme.error,
-      ),
-    );
+    SnackUtils.show(context, 'Không thể lưu cài đặt. Vui lòng thử lại.', success: false);
   }
 
   bool _isMuteActive(Map<String, dynamic> data) {
@@ -283,7 +284,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
             ),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getMyMutesStream(),
+              stream: _mutesStream,
               builder: (context, snapshot) {
                 final activeDocs = (snapshot.data?.docs ?? []).where((doc) {
                   final data = doc.data() as Map<String, dynamic>;
@@ -325,7 +326,7 @@ class _AppSettingsScreenState extends State<AppSettingsScreen> {
             ),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getMyBlocksStream(),
+              stream: _blocksStream,
               builder: (context, snapshot) {
                 final docs = snapshot.data?.docs ?? [];
                 return _SettingsSection(

@@ -1,5 +1,8 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:confetti/confetti.dart';
+import 'package:provider/provider.dart';
+import '../controllers/note_provider.dart';
 
 class SuccessAnimation extends StatefulWidget {
   final Widget child;
@@ -11,42 +14,26 @@ class SuccessAnimation extends StatefulWidget {
   State<SuccessAnimation> createState() => _SuccessAnimationState();
 }
 
-class _SuccessAnimationState extends State<SuccessAnimation> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  final List<Particle> _particles = [];
-  final Random _random = Random();
+class _SuccessAnimationState extends State<SuccessAnimation> {
+  late ConfettiController _confettiController;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    )..addListener(() {
-        if (mounted) setState(() {});
-      });
+    _confettiController = ConfettiController(duration: const Duration(seconds: 2));
   }
 
   @override
   void didUpdateWidget(SuccessAnimation oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.trigger && !oldWidget.trigger) {
-      _startAnimation();
+      _confettiController.play();
     }
-  }
-
-  void _startAnimation() {
-    _particles.clear();
-    for (int i = 0; i < 40; i++) {
-      _particles.add(Particle(_random));
-    }
-    _controller.reset();
-    _controller.forward();
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _confettiController.dispose();
     super.dispose();
   }
 
@@ -55,57 +42,31 @@ class _SuccessAnimationState extends State<SuccessAnimation> with SingleTickerPr
     return Stack(
       children: [
         widget.child,
-        if (_controller.isAnimating)
-          IgnorePointer(
-            child: CustomPaint(
-              size: Size.infinite,
-              painter: ParticlePainter(_particles, _controller.value),
-            ),
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConfettiWidget(
+            confettiController: _confettiController,
+            blastDirection: pi / 2, // Phun xuống dưới
+            maxBlastForce: 15,
+            minBlastForce: 5,
+            emissionFrequency: 0.05,
+            numberOfParticles: 25,
+            gravity: 0.2,
+            shouldLoop: false,
+            colors: const [
+              Colors.green,
+              Colors.blue,
+              Colors.pink,
+              Colors.orange,
+              Colors.purple,
+              Colors.amber,
+              Colors.red,
+            ],
           ),
+        ),
       ],
     );
   }
-}
-
-class Particle {
-  late double x, y;
-  late double vx, vy;
-  late Color color;
-  late double size;
-
-  Particle(Random random) {
-    x = 0.5; // Normalized center
-    y = 0.5;
-    double angle = random.nextDouble() * 2 * pi;
-    double speed = random.nextDouble() * 0.5 + 0.2;
-    vx = cos(angle) * speed;
-    vy = sin(angle) * speed;
-    color = Colors.primaries[random.nextInt(Colors.primaries.length)].withValues(alpha: 0.8);
-    size = random.nextDouble() * 8 + 4;
-  }
-}
-
-class ParticlePainter extends CustomPainter {
-  final List<Particle> particles;
-  final double progress;
-
-  ParticlePainter(this.particles, this.progress);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint();
-    for (var p in particles) {
-      final double x = size.width * (p.x + p.vx * progress);
-      final double y = size.height * (p.y + p.vy * progress + 0.5 * progress * progress); // Gravity effect
-      final double opacity = (1.0 - progress).clamp(0.0, 1.0);
-      
-      paint.color = p.color.withValues(alpha: opacity);
-      canvas.drawCircle(Offset(x, y), p.size, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
 
 class AnimatedProgressBar extends StatelessWidget {
@@ -126,33 +87,68 @@ class AnimatedProgressBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final effectiveBorderRadius = borderRadius ?? BorderRadius.circular(999);
+
+    // Nếu tiến độ là 0% hoặc nhỏ hơn, vẽ thanh rỗng ngay lập tức để tránh lỗi hoạt họa hoặc crash
+    if (value <= 0.0) {
+      return Container(
+        height: height,
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          borderRadius: effectiveBorderRadius,
+        ),
+      );
+    }
+
+    int animTrigger = 0;
+    try {
+      final noteProvider = Provider.of<NoteProvider>(context);
+      animTrigger = noteProvider.animationTrigger;
+    } catch (_) {}
+
     return Container(
+      key: ValueKey(animTrigger),
       height: height,
       width: double.infinity,
       alignment: Alignment.centerLeft,
       decoration: BoxDecoration(
         color: backgroundColor,
-        borderRadius: borderRadius ?? BorderRadius.circular(999),
+        borderRadius: effectiveBorderRadius,
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 600),
-            curve: Curves.easeOutCubic,
-            width: constraints.maxWidth * value.clamp(0.0, 1.0),
-            height: height,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: borderRadius ?? BorderRadius.circular(999),
-              boxShadow: [
-                if (value > 0)
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.3),
-                    blurRadius: 4,
-                    offset: const Offset(0, 1),
-                  ),
-              ],
-            ),
+          final targetWidth = value.clamp(0.0, 1.0);
+          
+          // Tốc độ không đổi: 0% -> 100% chạy hết 3 giây (3000ms)
+          // Thời gian chạy tỉ lệ thuận với tiến độ thực tế (ví dụ: 50% chạy hết 1.5 giây)
+          // Đảm bảo thời gian chạy tối thiểu là 400ms để hiệu ứng luôn rõ nét
+          final durationMs = (3000 * targetWidth).round().clamp(400, 3000);
+
+          return TweenAnimationBuilder<double>(
+            tween: Tween<double>(begin: 0.0, end: targetWidth),
+            duration: Duration(milliseconds: durationMs),
+            curve: Curves.easeOutBack, // Hiệu ứng nhún nhẹ (springy back) cực kỳ sang trọng
+            builder: (context, animValue, child) {
+              // Clamp kích thước chiều rộng để tránh giá trị âm gây lỗi render hoặc tràn viền
+              final width = (constraints.maxWidth * animValue).clamp(0.0, constraints.maxWidth);
+              return Container(
+                width: width,
+                height: height,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: effectiveBorderRadius,
+                  boxShadow: [
+                    if (animValue > 0)
+                      BoxShadow(
+                        color: color.withValues(alpha: 0.3),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                  ],
+                ),
+              );
+            },
           );
         },
       ),

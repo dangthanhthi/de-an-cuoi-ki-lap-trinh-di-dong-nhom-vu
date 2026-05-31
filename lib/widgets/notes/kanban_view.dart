@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../models/app_models.dart';
 import '../../views/create_edit_note_screen.dart';
+import '../../views/note_detail_screen.dart';
 import '../../controllers/app_state.dart';
+import '../../utils/snack_utils.dart';
 
 class KanbanView extends StatelessWidget {
   final List<Note> notes;
@@ -156,87 +158,112 @@ class _KanbanColumn extends StatelessWidget {
       return scoreB.compareTo(scoreA);
     });
 
-    return Container(
-      width: 280,
-      height: maxHeight,
-      margin: const EdgeInsets.only(right: 16),
-      decoration: BoxDecoration(
-        color: colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Icon(icon, size: 20, color: color),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(
-                    tasks.length.toString(),
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      color: color,
-                    ),
-                  ),
-                ),
-              ],
+    return DragTarget<Map<String, dynamic>>(
+      onWillAcceptWithDetails: (details) {
+        final data = details.data;
+        return data['status'] != status;
+      },
+      onAcceptWithDetails: (details) {
+        final data = details.data;
+        _updateStatusDirectly(context, data, status);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final isHovered = candidateData.isNotEmpty;
+
+        return Container(
+          width: 280,
+          height: maxHeight,
+          margin: const EdgeInsets.only(right: 16),
+          decoration: BoxDecoration(
+            color: isHovered
+                ? colorScheme.primaryContainer.withValues(alpha: 0.12)
+                : colorScheme.surfaceContainerHighest.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isHovered ? colorScheme.primary : Colors.transparent,
+              width: 1.5,
             ),
           ),
-          Expanded(
-            child: sortedTasks.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Center(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 20, color: color),
+                    const SizedBox(width: 8),
+                    Expanded(
                       child: Text(
-                        'Trống',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: colorScheme.outline,
-                          fontStyle: FontStyle.italic,
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          letterSpacing: 0.5,
                         ),
                       ),
                     ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    itemCount: sortedTasks.length,
-                    itemBuilder: (context, idx) =>
-                        _buildTaskCard(context, sortedTasks[idx], myEmail),
-                  ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        tasks.length.toString(),
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: sortedTasks.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Center(
+                          child: Text(
+                            'Trống',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colorScheme.outline,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        itemCount: sortedTasks.length,
+                        itemBuilder: (context, idx) =>
+                            _buildTaskCard(context, sortedTasks[idx], myEmail),
+                      ),
+              ),
+              const SizedBox(height: 12),
+            ],
           ),
-          const SizedBox(height: 12),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildTaskCard(BuildContext context, Map<String, dynamic> t, String myEmail) {
+  Widget _buildCardContent(
+    BuildContext context,
+    Map<String, dynamic> t,
+    String myEmail, {
+    bool dragFeedback = false,
+  }) {
     final note = t['note'] as Note;
     final type = t['type'] as String;
     final colorScheme = Theme.of(context).colorScheme;
@@ -257,23 +284,125 @@ class _KanbanColumn extends StatelessWidget {
     return Opacity(
       opacity: isNotMine ? 0.5 : 1.0,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 10,
-            offset: const Offset(0, 4),
+        width: dragFeedback ? 256 : double.infinity,
+        margin: dragFeedback ? EdgeInsets.zero : const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: dragFeedback ? 0.15 : 0.04),
+              blurRadius: dragFeedback ? 16 : 10,
+              offset: Offset(0, dragFeedback ? 8 : 4),
+            ),
+          ],
+          border: Border.all(
+            color: isDone
+                ? Colors.green.withValues(alpha: 0.2)
+                : colorScheme.outlineVariant.withValues(alpha: 0.4),
+            width: 1,
           ),
-        ],
-        border: Border.all(
-          color: isDone
-              ? Colors.green.withValues(alpha: 0.2)
-              : colorScheme.outlineVariant.withValues(alpha: 0.4),
-          width: 1,
         ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      mainText,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                        height: 1.4,
+                        decoration: isDone ? TextDecoration.lineThrough : null,
+                        color: isDone ? colorScheme.outline : colorScheme.onSurface,
+                      ),
+                    ),
+                  ),
+                  if (priority != 'none' && priority != 'low')
+                    _MiniChip(
+                      label: _getPriorityLabel(priority),
+                      color: _getPriorityColor(priority),
+                      icon: Icons.priority_high_rounded,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colorScheme.primaryContainer.withValues(
+                        alpha: 0.4,
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          type == 'todo'
+                              ? Icons.description_outlined
+                              : Icons.note_outlined,
+                          size: 12,
+                          color: colorScheme.primary,
+                        ),
+                        const SizedBox(width: 4),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 120),
+                          child: Text(
+                            type == 'todo'
+                                ? note.title
+                                : (note.label.isNotEmpty ? note.label : 'Ghi chú'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (type == 'todo' && note.label.isNotEmpty)
+                    _MiniChip(
+                      label: note.label,
+                      color: colorScheme.secondary,
+                      icon: Icons.label_outline_rounded,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTaskCard(BuildContext context, Map<String, dynamic> t, String myEmail) {
+    final note = t['note'] as Note;
+    return LongPressDraggable<Map<String, dynamic>>(
+      data: t,
+      feedback: Material(
+        color: Colors.transparent,
+        child: _buildCardContent(context, t, myEmail, dragFeedback: true),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.3,
+        child: _buildCardContent(context, t, myEmail),
       ),
       child: Material(
         color: Colors.transparent,
@@ -283,117 +412,55 @@ class _KanbanColumn extends StatelessWidget {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => CreateEditNoteScreen(note: note),
+                builder: (context) => NoteDetailScreen(note: note),
               ),
             );
           },
           onLongPress: () {
             HapticFeedback.mediumImpact();
+            FocusScope.of(context).unfocus();
             _showQuickActions(context, t);
           },
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        mainText,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                          height: 1.4,
-                          decoration: isDone
-                              ? TextDecoration.lineThrough
-                              : null,
-                          color: isDone
-                              ? colorScheme.outline
-                              : colorScheme.onSurface,
-                        ),
-                      ),
-                    ),
-                    if (priority != 'none' && priority != 'low')
-                      _MiniChip(
-                        label: _getPriorityLabel(priority),
-                        color: _getPriorityColor(priority),
-                        icon: Icons.priority_high_rounded,
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer.withValues(
-                          alpha: 0.4,
-                        ),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            type == 'todo'
-                                ? Icons.description_outlined
-                                : Icons.note_outlined,
-                            size: 12,
-                            color: colorScheme.primary,
-                          ),
-                          const SizedBox(width: 4),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 120),
-                            child: Text(
-                              type == 'todo'
-                                  ? note.title
-                                  : (note.label.isNotEmpty
-                                        ? note.label
-                                        : 'Ghi chú'),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: colorScheme.onPrimaryContainer,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (type == 'todo' && note.label.isNotEmpty)
-                      _MiniChip(
-                        label: note.label,
-                        color: colorScheme.secondary,
-                        icon: Icons.label_outline_rounded,
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
+          child: _buildCardContent(context, t, myEmail),
         ),
       ),
-    ));
+    );
   }
 
   void _confirmDeleteNote(BuildContext context, Note note) async {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool hasUnfinishedTasks = false;
+    if (note.isTodo) {
+      if (note.groupId.isEmpty) {
+        hasUnfinishedTasks = note.todos.any((t) => !t.isDone && t.status != TodoStatus.done);
+      } else {
+        hasUnfinishedTasks = note.todos.any((t) =>
+            t.assigneeEmail.toLowerCase().trim() == myEmail &&
+            !t.isDone &&
+            t.status != TodoStatus.done);
+      }
+    }
+
+    final String contentText;
+    if (note.groupId.isNotEmpty) {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc của bạn chưa hoàn thành. Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc chắn muốn xóa không?';
+      } else {
+        contentText = 'Hành động này sẽ xóa ghi chú cho TẤT CẢ thành viên trong nhóm. Bạn có chắc không?';
+      }
+    } else {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc chưa hoàn thành. Bạn có chắc chắn muốn xóa ghi chú này không?';
+      } else {
+        contentText = 'Bạn có chắc muốn xóa ghi chú này không?';
+      }
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Xóa vĩnh viễn?'),
-        content: const Text(
-          'Hành động này sẽ xóa ghi chú cho TẤT CẢ thành viên trong nhóm. Bạn có chắc không?',
-        ),
+        content: Text(contentText),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -411,18 +478,41 @@ class _KanbanColumn extends StatelessWidget {
     );
 
     if (confirmed == true) {
-      await FirebaseService.deleteNote(note.id, note.title);
+      final res = await FirebaseService.deleteNote(note.id, note.title);
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Đã xóa ghi chú vĩnh viễn')),
-        );
+        if (res != 'SUCCESS') {
+          SnackUtils.show(context, res, success: false);
+        } else {
+          SnackUtils.show(context, 'Đã xóa ghi chú vĩnh viễn');
+        }
       }
     }
   }
 
-  void _showQuickActions(BuildContext context, Map<String, dynamic> t) {
+  Future<void> _showQuickActions(BuildContext context, Map<String, dynamic> t) async {
     final colorScheme = Theme.of(context).colorScheme;
     final currentStatus = t['status'] as String;
+    final note = t['note'] as Note;
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    final creatorEmail = note.createdByEmail.toLowerCase().trim();
+    final isAdmin = AppState.currentUserRole.toLowerCase() == 'admin';
+    
+    final isOwner = (creatorEmail.isNotEmpty && creatorEmail == myEmail) ||
+        (creatorEmail.isEmpty && note.groupId.isEmpty && note.sharedWith.isEmpty);
+
+    final bool canManageGroup = note.groupId.isEmpty
+        ? true
+        : await FirebaseService.canCurrentUserManageGroupTasks(note.groupId);
+
+    final isSharedWithMe = note.sharedWith.any((e) => e.toLowerCase().trim() == myEmail);
+    final canEdit = isOwner || 
+        isSharedWithMe || 
+        (note.groupId.isEmpty && isAdmin) || 
+        (note.groupId.isNotEmpty && canManageGroup);
+    final canDelete = (note.groupId.isEmpty && isAdmin) || 
+        (note.groupId.isNotEmpty ? canManageGroup : isOwner);
+
+    if (!context.mounted) return;
 
     showModalBottomSheet(
       context: context,
@@ -464,29 +554,31 @@ class _KanbanColumn extends StatelessWidget {
               ),
             const SizedBox(height: 12),
             const Divider(),
-            _ActionTile(
-              title: 'Chỉnh sửa',
-              icon: Icons.edit_outlined,
-              color: colorScheme.onSurface,
-              onTap: () {
-                Navigator.pop(sheetContext);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => CreateEditNoteScreen(note: t['note'] as Note),
-                  ),
-                );
-              },
-            ),
-            _ActionTile(
-              title: 'Xóa vĩnh viễn',
-              icon: Icons.delete_outline,
-              color: colorScheme.error,
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _confirmDeleteNote(context, t['note'] as Note);
-              },
-            ),
+            if (canEdit)
+              _ActionTile(
+                title: 'Chỉnh sửa',
+                icon: Icons.edit_outlined,
+                color: colorScheme.onSurface,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => CreateEditNoteScreen(note: note),
+                    ),
+                  );
+                },
+              ),
+            if (canDelete)
+              _ActionTile(
+                title: 'Xóa vĩnh viễn',
+                icon: Icons.delete_outline,
+                color: colorScheme.error,
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _confirmDeleteNote(context, note);
+                },
+              ),
             const SizedBox(height: 12),
           ],
         ),
@@ -500,54 +592,44 @@ class _KanbanColumn extends StatelessWidget {
     String newStatus,
   ) async {
     Navigator.pop(context);
+    await _updateStatusDirectly(context, t, newStatus);
+  }
+
+  Future<void> _updateStatusDirectly(
+    BuildContext context,
+    Map<String, dynamic> t,
+    String newStatus,
+  ) async {
     final note = t['note'] as Note;
     final type = t['type'] as String;
 
     try {
+      final String res;
       if (type == 'todo') {
-        await FirebaseService.updateTodoStatus(
+        res = await FirebaseService.updateTodoStatus(
           note.id,
           t['index'] as int,
           newStatus,
         );
       } else {
-        await NoteService.updateNoteStatus(note.id, newStatus);
+        res = await NoteService.updateNoteStatus(note.id, newStatus);
       }
+
+      if (res != 'SUCCESS') {
+        if (context.mounted) {
+          SnackUtils.show(context, res, success: false);
+        }
+        return;
+      }
+
       HapticFeedback.mediumImpact();
 
       if (context.mounted) {
-        ScaffoldMessenger.of(context).clearSnackBars();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Row(
-              children: [
-                Icon(Icons.check_circle_rounded, color: Colors.white, size: 20),
-                SizedBox(width: 12),
-                Text(
-                  'Cập nhật trạng thái thành công',
-                  style: TextStyle(fontWeight: FontWeight.w500),
-                ),
-              ],
-            ),
-            backgroundColor: Colors.green.shade600,
-            behavior: SnackBarBehavior.floating,
-            duration: const Duration(seconds: 2),
-            margin: const EdgeInsets.all(16),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-        );
+        SnackUtils.show(context, 'Cập nhật trạng thái thành công');
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Lỗi: ${e.toString()}'),
-            backgroundColor: Theme.of(context).colorScheme.error,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        SnackUtils.show(context, 'Lỗi: ${e.toString()}', success: false);
       }
     }
   }

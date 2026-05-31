@@ -15,15 +15,20 @@ import '../controllers/note_provider.dart';
 import '../controllers/app_state.dart';
 import '../models/app_models.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 import 'message_details_screen.dart';
 import 'components/message_context_menu.dart';
 import '../widgets/ui_state_view.dart';
 import '../widgets/success_animation.dart';
 import '../widgets/common/multi_image_gallery.dart';
+import 'package:easy_image_viewer/easy_image_viewer.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'create_edit_note_screen.dart';
 import 'note_detail_screen.dart';
+import 'image_grid_preview_screen.dart';
 import 'group_info_screen.dart';
 import '../utils/note_utils.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class GroupNotesScreen extends StatefulWidget {
   final String groupId;
@@ -42,6 +47,7 @@ class GroupNotesScreen extends StatefulWidget {
 class _GroupNotesScreenState extends State<GroupNotesScreen> {
   final TextEditingController _commentController = TextEditingController();
   String _searchQuery = '';
+  final FocusNode _searchFocusNode = FocusNode();
   int _tabIndex = 0;
   final ScrollController _discussionScrollController = ScrollController();
   final ScrollController _notesScrollController = ScrollController();
@@ -65,10 +71,25 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
   bool _isMuted = false;
   final ImagePicker _imagePicker = ImagePicker();
   StreamSubscription<DocumentSnapshot>? _groupStatusSubscription;
+  late final Stream<QuerySnapshot> _groupNotesStream;
+  late final Stream<QuerySnapshot> _groupCommentsStream;
+  late final Stream<QuerySnapshot> _pinnedCommentsStream;
+
+  void _showSnack(String message, {bool success = true}) {
+    SnackUtils.show(context, message, success: success);
+  }
 
   @override
   void initState() {
     super.initState();
+    _groupNotesStream = FirebaseService.getGroupNotesStream(widget.groupId);
+    _groupCommentsStream = FirebaseService.getGroupCommentsStream(widget.groupId);
+    _pinnedCommentsStream = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(widget.groupId)
+        .collection('comments')
+        .where('isPinned', isEqualTo: true)
+        .snapshots();
     FirebaseService.markGroupAsRead(widget.groupId);
     _loadMembers();
     _loadGroupMeta();
@@ -78,6 +99,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
   @override
   void dispose() {
+    _searchFocusNode.dispose();
     _groupStatusSubscription?.cancel();
     _pinnedController.dispose();
     _commentController.removeListener(_onCommentChanged);
@@ -95,12 +117,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
         .listen((snapshot) {
       if (!snapshot.exists && mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Nhóm này đã bị giải tán bởi trưởng nhóm.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
+        SnackUtils.show(context, 'Nhóm này đã bị giải tán bởi trưởng nhóm.', success: false);
       }
     });
   }
@@ -345,22 +362,11 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       }
 
       if (result != 'SUCCESS' && mounted) {
-        final colorScheme = Theme.of(context).colorScheme;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result, style: const TextStyle(color: Colors.white)),
-            backgroundColor: colorScheme.error,
-          ),
-        );
+        _showSnack(result, success: false);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Lỗi gửi bình luận: $e', style: const TextStyle(color: Colors.white)),
-            backgroundColor: Colors.red,
-          ),
-        );
+        _showSnack('Lỗi gửi bình luận: $e', success: false);
       }
     }
   }
@@ -391,12 +397,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       },
       onCopy: () {
         Clipboard.setData(ClipboardData(text: (data['text'] ?? '').toString()));
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Đã sao chép tin nhắn', style: TextStyle(color: Colors.white)),
-            backgroundColor: Colors.green,
-          ),
-        );
+        _showSnack('Đã sao chép tin nhắn');
       },
       onPin: () async {
         final isPin = data['isPinned'] != true;
@@ -406,16 +407,11 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
           isPin,
         );
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                res == 'SUCCESS'
-                    ? (isPin ? 'Đã ghim tin nhắn' : 'Đã gỡ ghim tin nhắn')
-                    : res,
-                style: const TextStyle(color: Colors.white),
-              ),
-              backgroundColor: res == 'SUCCESS' ? Colors.green : Colors.red,
-            ),
+          _showSnack(
+            res == 'SUCCESS'
+                ? (isPin ? 'Đã ghim tin nhắn' : 'Đã gỡ ghim tin nhắn')
+                : res,
+            success: res == 'SUCCESS',
           );
         }
       },
@@ -427,12 +423,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
           deleteForEveryone: false,
         );
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Đã ẩn thảo luận này', style: TextStyle(color: Colors.white)),
-              backgroundColor: Colors.green,
-            ),
-          );
+          _showSnack('Đã ẩn thảo luận này');
         }
       },
       onRecall: (isMe || AppState.currentUserRole == 'Admin') ? () async {
@@ -461,14 +452,9 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
             deleteForEveryone: true,
           );
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                  res == 'SUCCESS' ? 'Đã thu hồi thảo luận' : res,
-                  style: const TextStyle(color: Colors.white),
-                ),
-                backgroundColor: res == 'SUCCESS' ? Colors.green : Colors.red,
-              ),
+            _showSnack(
+              res == 'SUCCESS' ? 'Đã thu hồi thảo luận' : res,
+              success: res == 'SUCCESS',
             );
           }
         }
@@ -486,22 +472,11 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     if (!mounted) return;
     if (result == 'SUCCESS') {
       setState(() => _isMuted = duration != null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            duration != null ? 'Đã tắt thông báo nhóm' : 'Đã mở lại thông báo nhóm',
-            style: const TextStyle(color: Colors.white),
-          ),
-          backgroundColor: Colors.green,
-        ),
+      _showSnack(
+        duration != null ? 'Đã tắt thông báo nhóm' : 'Đã mở lại thông báo nhóm',
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result, style: const TextStyle(color: Colors.white)),
-          backgroundColor: Colors.red,
-        ),
-      );
+      _showSnack(result, success: false);
     }
   }
 
@@ -511,22 +486,11 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     if (!mounted) return;
     if (result == 'SUCCESS') {
       setState(() => _isPinned = newPinned);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            newPinned ? 'Đã ghim nhóm' : 'Đã bỏ ghim nhóm',
-            style: const TextStyle(color: Colors.white),
-          ),
-          backgroundColor: Colors.green,
-        ),
+      _showSnack(
+        newPinned ? 'Đã ghim nhóm' : 'Đã bỏ ghim nhóm',
       );
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result, style: const TextStyle(color: Colors.white)),
-          backgroundColor: Colors.red,
-        ),
-      );
+      _showSnack(result, success: false);
     }
   }
 
@@ -602,6 +566,14 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     return Scaffold(
         appBar: AppBar(
         title: InkWell(
@@ -702,6 +674,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
           child: TextField(
+            focusNode: _searchFocusNode,
             onChanged: (value) => setState(() => _searchQuery = value),
             decoration: InputDecoration(
               hintText: 'Tìm kiếm ghi chú nhóm...',
@@ -717,7 +690,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
         ),
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getGroupNotesStream(widget.groupId),
+            stream: _groupNotesStream,
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return UiStateView(
@@ -727,7 +700,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                 );
               }
 
-              if (snapshot.connectionState == ConnectionState.waiting) {
+              if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
                 return const UiStateLoading(
                   message: 'Đang tải ghi chú nhóm...',
                 );
@@ -858,7 +831,10 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                 title: const Text('Di chuyển sang Cần làm'),
                 onTap: () async {
                   Navigator.pop(sheetContext);
-                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.todo);
+                  final res = await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.todo);
+                  if (res != 'SUCCESS') {
+                    _showSnack(res, success: false);
+                  }
                 },
               ),
             if (currentStatus != TodoStatus.doing)
@@ -867,7 +843,10 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                 title: const Text('Cập nhật thành Đang làm'),
                 onTap: () async {
                   Navigator.pop(sheetContext);
-                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.doing);
+                  final res = await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.doing);
+                  if (res != 'SUCCESS') {
+                    _showSnack(res, success: false);
+                  }
                 },
               ),
             if (currentStatus != TodoStatus.done)
@@ -876,7 +855,10 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                 title: const Text('Cập nhật thành Hoàn thành'),
                 onTap: () async {
                   Navigator.pop(sheetContext);
-                  await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.done);
+                  final res = await FirebaseService.updateTodoStatus(note.id, t['index'] as int, TodoStatus.done);
+                  if (res != 'SUCCESS') {
+                    _showSnack(res, success: false);
+                  }
                 },
               ),
             const Divider(),
@@ -916,7 +898,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
         alpha: 0.5,
       ), // Subtle background for the board
       child: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseService.getGroupNotesStream(widget.groupId),
+        stream: _groupNotesStream,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
             return const UiStateView(
@@ -926,7 +908,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
             );
           }
 
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
             return const UiStateLoading(message: 'Đang tải bảng công việc...');
           }
 
@@ -1364,7 +1346,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
           child: Stack(
             children: [
               StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.getGroupCommentsStream(widget.groupId),
+                stream: _groupCommentsStream,
                 builder: (context, snapshot) {
                   if (snapshot.hasError) {
                     return const UiStateView(
@@ -1375,7 +1357,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                     );
                   }
 
-                  if (snapshot.connectionState == ConnectionState.waiting) {
+                  if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
                     return const UiStateLoading(
                       message: 'Đang tải thảo luận...',
                     );
@@ -1625,6 +1607,11 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                                                         List<String>.from(data['attachments']),
                                                         isMe,
                                                         colorScheme,
+                                                        MediaQuery.of(context).size.width * 0.72 -
+                                                            ((text.trim().isEmpty && List<String>.from(data['attachments']).every((a) => isImageValue(a)))
+                                                                ? 0.0
+                                                                : 28.0) -
+                                                            6.0,
                                                       ),
                                                     if (text.isNotEmpty)
                                                       _buildMessageText(
@@ -2088,13 +2075,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       
       if (pinnedCount >= 3) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text('Mỗi nhóm chỉ được ghim tối đa 3 ghi chú', style: TextStyle(color: Colors.white)),
-              backgroundColor: Colors.orange.shade900,
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+          _showSnack('Mỗi nhóm chỉ được ghim tối đa 3 ghi chú', success: false);
         }
         return;
       }
@@ -2102,25 +2083,28 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
     await FirebaseService.toggleGroupNotePin(note.id, !isPinned);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          !isPinned ? 'Đã ghim ghi chú lên đầu nhóm' : 'Đã bỏ ghim ghi chú',
-          style: const TextStyle(color: Colors.white),
-        ),
-        backgroundColor: Colors.green,
-      ),
-    );
+    _showSnack(!isPinned ? 'Đã ghim ghi chú lên đầu nhóm' : 'Đã bỏ ghim ghi chú');
   }
 
   Future<void> _confirmDeleteNote(Note note) async {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool hasUnfinishedTasks = false;
+    if (note.isTodo) {
+      hasUnfinishedTasks = note.todos.any((t) =>
+          t.assigneeEmail.toLowerCase().trim() == myEmail &&
+          !t.isDone &&
+          t.status != TodoStatus.done);
+    }
+
+    final contentText = hasUnfinishedTasks
+        ? 'Ghi chú này còn công việc của bạn chưa hoàn thành. Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc chắn muốn xóa không?'
+        : 'Hành động này sẽ xóa ghi chú cho TẤT CẢ thành viên trong nhóm. Bạn có chắc không?';
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Xóa vĩnh viễn?'),
-        content: const Text(
-          'Hành động này sẽ xóa ghi chú cho TẤT CẢ thành viên trong nhóm. Bạn có chắc không?',
-        ),
+        content: Text(contentText),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -2138,16 +2122,13 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     );
 
     if (confirmed == true) {
-      await FirebaseService.deleteNote(note.id, note.title);
+      final res = await FirebaseService.deleteNote(note.id, note.title);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(
-        const SnackBar(
-          content: Text('Đã xóa ghi chú vĩnh viễn', style: TextStyle(color: Colors.white)),
-          backgroundColor: Colors.green,
-        ),
-      );
+      if (res != 'SUCCESS') {
+        _showSnack(res, success: false);
+      } else {
+        _showSnack('Đã xóa ghi chú vĩnh viễn');
+      }
     }
   }
 
@@ -2172,12 +2153,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                   .doc(commentId)
                   .update({'isPinned': false});
               if (!context.mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Đã gỡ ghim tin nhắn', style: TextStyle(color: Colors.white)),
-                  backgroundColor: Colors.green,
-                ),
-              );
+              _showSnack('Đã gỡ ghim tin nhắn');
             },
             child: const Text('Gỡ ghim', style: TextStyle(color: Colors.red)),
           ),
@@ -2188,12 +2164,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
   Widget _buildPinnedMessagesBar(List<QueryDocumentSnapshot> allComments) {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('groups')
-          .doc(widget.groupId)
-          .collection('comments')
-          .where('isPinned', isEqualTo: true)
-          .snapshots(),
+      stream: _pinnedCommentsStream,
       builder: (context, snapshot) {
         final allDocs = snapshot.data?.docs ?? [];
         final docs = allDocs.where((doc) {
@@ -2379,24 +2350,35 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
   Widget _buildDraftAttachments() {
     if (_attachments.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          for (var i = 0; i < _attachments.length; i++)
-            InputChip(
-              avatar: Icon(
-                isImageValue(_attachments[i])
-                    ? Icons.image_outlined
-                    : Icons.attach_file,
-                size: 18,
+    return Container(
+      height: 48,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < _attachments.length; i++) ...[
+              InputChip(
+                avatar: Icon(
+                  isImageValue(_attachments[i])
+                      ? Icons.image_outlined
+                      : Icons.attach_file,
+                  size: 18,
+                ),
+                label: Text(attachmentLabel(_attachments[i], i)),
+                onDeleted: () => setState(() => _attachments.removeAt(i)),
+                onPressed: () {
+                  if (isImageValue(_attachments[i])) {
+                    _showImagePreview([_attachments[i]], 0);
+                  } else {
+                    _openAttachment(_attachments[i], i);
+                  }
+                },
               ),
-              label: Text(attachmentLabel(_attachments[i], i)),
-              onDeleted: () => setState(() => _attachments.removeAt(i)),
-            ),
-        ],
+              if (i < _attachments.length - 1) const SizedBox(width: 8),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -2405,6 +2387,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     List<String> attachments,
     bool isMe,
     ColorScheme colorScheme,
+    double maxGalleryWidth,
   ) {
     final images = attachments.where((a) => isImageValue(a)).toList();
     final files = attachments.where((a) => !isImageValue(a)).toList();
@@ -2416,10 +2399,9 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
           MultiImageGallery(
             images: images,
             onTapImage: (index) {
-              final originalIndex = attachments.indexOf(images[index]);
-              _showImagePreview(images[index], originalIndex);
+              _showImagePreview(images, index);
             },
-            maxWidth: MediaQuery.of(context).size.width * 0.65,
+            maxWidth: maxGalleryWidth,
           ),
           if (files.isNotEmpty) const SizedBox(height: 8),
         ],
@@ -2474,11 +2456,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     final microphoneStatus = await Permission.microphone.request();
     if (!microphoneStatus.isGranted) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Bạn cần cấp quyền micro để nhập bằng giọng nói.'),
-          ),
-        );
+        _showSnack('Bạn cần cấp quyền micro để nhập bằng giọng nói.', success: false);
       }
       return;
     }
@@ -2499,9 +2477,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
 
     if (!available) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Thiết bị chưa hỗ trợ nhận giọng nói.')),
-        );
+        _showSnack('Thiết bị chưa hỗ trợ nhận giọng nói.', success: false);
       }
       return;
     }
@@ -2580,11 +2556,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       final cameraStatus = await Permission.camera.request();
       if (!cameraStatus.isGranted) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Bạn cần cấp quyền camera để chụp ảnh.'),
-            ),
-          );
+          _showSnack('Bạn cần cấp quyền camera để chụp ảnh.', success: false);
         }
         return;
       }
@@ -2598,11 +2570,15 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     }
 
     if (source == ImageSource.gallery) {
-      final images = await _imagePicker.pickMultiImage(
+      var images = await _imagePicker.pickMultiImage(
         imageQuality: 50,
         maxWidth: 800,
       );
       if (images.isNotEmpty) {
+        if (images.length > 15) {
+          _showSnack('Chỉ được chọn tối đa 15 ảnh mỗi lần. Đã lấy 15 ảnh đầu tiên.', success: false);
+          images = images.sublist(0, 15);
+        }
         for (final img in images) {
           final bytes = await img.readAsBytes();
           setState(() => _attachments.add(buildDataUri(bytes, img.name)));
@@ -2634,59 +2610,65 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Lỗi chọn tệp: $e')));
+        _showSnack('Lỗi chọn tệp: $e', success: false);
       }
     }
   }
 
-  void _showImagePreview(String value, int index) {
-    showDialog(
-      context: context,
-      builder: (context) => Dialog.fullscreen(
-        backgroundColor: Colors.black,
-        child: Stack(
-          children: [
-            Center(
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 4.0,
-                child: Image.memory(
-                  bytesFromDataUri(value)!,
-                  fit: BoxFit.contain,
-                ),
-              ),
-            ),
-            Positioned(
-              top: 40,
-              right: 20,
-              child: IconButton(
-                icon: const Icon(Icons.close, color: Colors.white, size: 30),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
-          ],
+  void _showImagePreview(List<String> imagesOnly, int initialIndex) {
+    if (imagesOnly.length > 1) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageGridPreviewScreen(
+            images: imagesOnly,
+            initialIndex: initialIndex,
+          ),
         ),
-      ),
+      );
+      return;
+    }
+    final List<ImageProvider> providers = [];
+    for (final value in imagesOnly) {
+      final bytes = bytesFromDataUri(value);
+      if (bytes != null) {
+        providers.add(MemoryImage(bytes));
+      } else {
+        providers.add(CachedNetworkImageProvider(value));
+      }
+    }
+    if (providers.isEmpty) return;
+
+    showImageViewerPager(
+      context,
+      MultiImageProvider(providers, initialIndex: initialIndex),
+      swipeDismissible: true,
+      doubleTapZoomable: true,
     );
   }
 
   Future<void> _openAttachment(String value, int index) async {
     try {
       final bytes = bytesFromDataUri(value);
-      if (bytes == null) return;
-      final fileName = fileNameFromDataUri(value);
-      final tempDir = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/$fileName');
-      await tempFile.writeAsBytes(bytes);
-      await OpenFilex.open(tempFile.path);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Không thể mở tệp: $e')));
+      if (bytes != null) {
+        final fileName = sanitizeFileName(
+          fileNameFromDataUri(value, fallback: 'tep-${index + 1}'),
+          fallback: 'tep-${index + 1}',
+        );
+        final dir = await getTemporaryDirectory();
+        final file = File('${dir.path}/$fileName');
+        await file.writeAsBytes(bytes, flush: true);
+        await OpenFilex.open(file.path);
+        return;
       }
+      final uri = Uri.tryParse(value);
+      if (uri != null && await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnack('Không mở được tệp', success: false);
+      }
+    } catch (e) {
+      _showSnack('Lỗi mở tệp: $e', success: false);
     }
   }
 
@@ -2778,12 +2760,18 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
     final List<InlineSpan> spans = [];
     final RegExp mentionRegex = RegExp(r'@\[([^\]]+)\]');
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     final baseStyle = TextStyle(
       fontSize: 15,
-      color: isMe ? Colors.white : colorScheme.onSurface,
+      color: isMe ? colorScheme.onPrimary : colorScheme.onSurface,
     );
     final mentionStyle = TextStyle(
-      color: isMe ? const Color(0xFF80D8FF) : const Color(0xFF0068FF),
+      color: isMe
+          ? (isDark ? const Color(0xFF0D47A1) : const Color(0xFFE0F7FA))
+          : (isDark ? const Color(0xFF64B5F6) : const Color(0xFF0068FF)),
+      backgroundColor: isMe
+          ? (isDark ? const Color(0x1F000000) : const Color(0x33FFFFFF))
+          : (isDark ? const Color(0x2264B5F6) : const Color(0x1F0068FF)),
       fontWeight: FontWeight.bold,
       fontSize: 15,
     );
@@ -2819,11 +2807,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
               if (member.isNotEmpty && member['email'] != null) {
                 _showUserProfile(member['email']);
               } else if (searchName == 'tất cả' || searchName == 'all') {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Bạn đã nhắc tên tất cả thành viên'),
-                  ),
-                );
+                _showSnack('Bạn đã nhắc tên tất cả thành viên');
               }
             },
         ),
@@ -3012,9 +2996,7 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
       Navigator.pop(context);
 
       if (userSnap.docs.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Không tìm thấy thông tin người dùng')),
-        );
+        _showSnack('Không tìm thấy thông tin người dùng', success: false);
         return;
       }
 
@@ -3126,16 +3108,12 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                                       final result = await FirebaseService.cancelFriendRequest(targetEmail);
                                       if (result == "SUCCESS") {
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('Đã hủy lời mời kết bạn!')),
-                                          );
+                                          _showSnack('Đã hủy lời mời kết bạn!');
                                         }
                                         setSheetState(() {});
                                       } else {
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: Text(result), backgroundColor: colorScheme.error),
-                                          );
+                                          _showSnack(result, success: false);
                                         }
                                       }
                                     } else {
@@ -3145,16 +3123,12 @@ class _GroupNotesScreenState extends State<GroupNotesScreen> {
                                           );
                                       if (result == "SUCCESS") {
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            const SnackBar(content: Text('Đã gửi lời mời kết bạn!')),
-                                          );
+                                          _showSnack('Đã gửi lời mời kết bạn!');
                                         }
                                         setSheetState(() {});
                                       } else {
                                         if (context.mounted) {
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(content: Text(result), backgroundColor: colorScheme.error),
-                                          );
+                                          _showSnack(result, success: false);
                                         }
                                       }
                                     }

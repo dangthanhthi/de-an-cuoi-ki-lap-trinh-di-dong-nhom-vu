@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
 import '../widgets/ui_state_view.dart';
+import '../utils/snack_utils.dart';
 import 'group_info_screen.dart';
 import 'group_notes_screen.dart';
 
@@ -16,7 +17,27 @@ class GroupsListScreen extends StatefulWidget {
 
 class _GroupsListScreenState extends State<GroupsListScreen> {
   String _searchQuery = '';
+  final FocusNode _searchFocusNode = FocusNode();
   Stream<QuerySnapshot>? _groupsStream;
+  late Stream<QuerySnapshot> _groupRequestsStream;
+  final Map<String, Stream<List<Map<String, dynamic>>>> _onlineMembersStreams = {};
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _groupsStream = FirebaseService.getMyGroupsStream();
+    _groupRequestsStream = FirebaseService.getGroupRequestsForLeaderStream();
+  }
+
+  void _showSnack(String message, {bool success = true}) {
+    SnackUtils.show(context, message, success: success);
+  }
 
   DateTime _groupSortDate(Map<String, dynamic> group) {
     final updatedAt = group['updatedAt'];
@@ -29,15 +50,11 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
   Future<void> _toggleGroupPinAction(String groupId, bool isPinned) async {
     final result = await FirebaseService.toggleGroupPin(groupId, !isPinned);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          result == "SUCCESS"
-              ? (!isPinned ? "Đã ghim nhóm" : "Đã bỏ ghim nhóm")
-              : result,
-        ),
-        backgroundColor: result == "SUCCESS" ? Colors.green : Colors.red,
-      ),
+    _showSnack(
+      result == "SUCCESS"
+          ? (!isPinned ? "Đã ghim nhóm" : "Đã bỏ ghim nhóm")
+          : result,
+      success: result == "SUCCESS",
     );
   }
 
@@ -160,20 +177,15 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
               final name = nameCtrl.text.trim();
               if (name.isEmpty) return;
 
-              final scaffoldMsg = ScaffoldMessenger.of(context);
               Navigator.pop(ctx);
 
               final result = await FirebaseService.createGroup(name);
-              scaffoldMsg.showSnackBar(
-                SnackBar(
-                  content: Text(
-                    result == "SUCCESS" ? "Đã tạo nhóm mới" : result,
-                  ),
-                  backgroundColor: result == "SUCCESS"
-                      ? Colors.green
-                      : Colors.red,
-                ),
-              );
+              if (context.mounted) {
+                _showSnack(
+                  result == "SUCCESS" ? "Đã tạo nhóm mới" : result,
+                  success: result == "SUCCESS",
+                );
+              }
             },
             child: const Text('Tạo'),
           ),
@@ -235,19 +247,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                           setDialogState(() => isJoining = false);
                           Navigator.pop(ctx);
                           if (result == "SUCCESS") {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Vào nhóm thành công!'),
-                                backgroundColor: Colors.green,
-                              ),
-                            );
+                            _showSnack('Vào nhóm thành công!');
                           } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(result),
-                                backgroundColor: Colors.red,
-                              ),
-                            );
+                            _showSnack(result, success: false);
                           }
                         }
                       },
@@ -288,15 +290,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
               final result = await FirebaseService.deleteGroup(groupId);
               if (!context.mounted) return;
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(
-                    result == "SUCCESS" ? "Đã giải tán nhóm" : result,
-                  ),
-                  backgroundColor: result == "SUCCESS"
-                      ? Colors.green
-                      : Colors.red,
-                ),
+              _showSnack(
+                result == "SUCCESS" ? "Đã giải tán nhóm" : result,
+                success: result == "SUCCESS",
               );
             },
             child: const Text('Xóa ngay'),
@@ -326,13 +322,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
               );
               if (!context.mounted) return;
               Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(result == "SUCCESS" ? "Đã rời nhóm" : result),
-                  backgroundColor: result == "SUCCESS"
-                      ? Colors.green
-                      : Colors.red,
-                ),
+              _showSnack(
+                result == "SUCCESS" ? "Đã rời nhóm" : result,
+                success: result == "SUCCESS",
               );
             },
             child: const Text('Rời nhóm'),
@@ -344,6 +336,14 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
@@ -409,6 +409,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: TextField(
+              focusNode: _searchFocusNode,
               onChanged: (value) => setState(() => _searchQuery = value),
               decoration: InputDecoration(
                 hintText: 'Tìm kiếm nhóm...',
@@ -424,9 +425,10 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: _groupsStream ??= FirebaseService.getMyGroupsStream(),
+              stream: _groupsStream,
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
+                  debugPrint("GROUP STREAM ERROR DETAILS: ${snapshot.error}");
                   return const UiStateView(
                     icon: Icons.cloud_off_outlined,
                     title: 'Không tải được danh sách nhóm',
@@ -548,7 +550,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
 
                         leading: StreamBuilder<QuerySnapshot>(
                           stream: (isLeader || isManager)
-                              ? FirebaseService.getGroupRequestsForLeaderStream()
+                              ? _groupRequestsStream
                               : const Stream.empty(),
                           builder: (context, snap) {
                             final reqs = (snap.data?.docs ?? [])
@@ -588,7 +590,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                           children: [
                             const SizedBox(height: 6),
                             StreamBuilder<List<Map<String, dynamic>>>(
-                              stream:
+                              stream: _onlineMembersStreams[groupId] ??=
                                   FirebaseService.getOnlineGroupMembersStream(
                                     groupId,
                                   ),
@@ -670,13 +672,7 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                                   Clipboard.setData(
                                     ClipboardData(text: groupCode),
                                   );
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text(
-                                        'Đã chép mã nhóm vào khay nhớ tạm!',
-                                      ),
-                                    ),
-                                  );
+                                  _showSnack('Đã chép mã nhóm vào khay nhớ tạm!');
                                 },
                                 child: Container(
                                   padding: const EdgeInsets.symmetric(
@@ -737,17 +733,9 @@ class _GroupsListScreenState extends State<GroupsListScreen> {
                           );
                           if (!context.mounted) return;
                           if (result == 'deleted') {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Đã giải tán nhóm thành công'),
-                              ),
-                            );
+                            _showSnack('Đã giải tán nhóm thành công');
                           } else if (result == 'left') {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Bạn đã rời khỏi nhóm'),
-                              ),
-                            );
+                            _showSnack('Bạn đã rời khỏi nhóm');
                           }
                         },
                         onLongPress: () => _showGroupQuickActions(

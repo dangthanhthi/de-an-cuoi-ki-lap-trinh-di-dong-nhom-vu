@@ -90,15 +90,29 @@ service cloud.firestore {
     }
 
     function isNoteOwner(data) {
-      return signedIn() && data.userId == currentUid();
+      return signedIn()
+          && data.keys().hasAll(['userId'])
+          && data.userId == currentUid();
     }
 
     function isSharedNoteViewer(data) {
-      return signedIn() && currentEmail() in data.sharedWith;
+      return signedIn()
+          && data.keys().hasAll(['sharedWith'])
+          && data.sharedWith is list
+          && currentEmail() in data.sharedWith;
+    }
+
+    function isAssignee(data) {
+      return signedIn()
+          && data.keys().hasAll(['assigneeEmails'])
+          && data.assigneeEmails is list
+          && currentEmail() in data.assigneeEmails;
     }
 
     function isGroupNote(data) {
-      return data.groupId is string && data.groupId != '';
+      return data.keys().hasAll(['groupId'])
+          && data.groupId is string
+          && data.groupId != '';
     }
 
     function canReadNote(data) {
@@ -107,6 +121,7 @@ service cloud.firestore {
             isAdmin()
             || isNoteOwner(data)
             || isSharedNoteViewer(data)
+            || isAssignee(data)
             || (isGroupNote(data) && isGroupMember(data.groupId))
           );
     }
@@ -116,6 +131,8 @@ service cloud.firestore {
           && (
             isAdmin()
             || isNoteOwner(data)
+            || isSharedNoteViewer(data)
+            || isAssignee(data)
             || (isGroupNote(data) && isGroupMember(data.groupId))
           );
     }
@@ -186,6 +203,7 @@ service cloud.firestore {
 
     function isChatParticipant(data) {
       return signedIn()
+          && data.keys().hasAll(['participants'])
           && data.participants is list
           && currentEmail() in data.participants;
     }
@@ -237,9 +255,12 @@ service cloud.firestore {
 
     function validNoteContentUpdate(data) {
       return canEditNoteContent(data)
-          && request.resource.data.userId == resource.data.userId
-          && request.resource.data.groupId == resource.data.groupId
-          && request.resource.data.createdByEmail == resource.data.createdByEmail;
+          && (!('userId' in resource.data) || request.resource.data.userId == resource.data.userId)
+          && (!('groupId' in resource.data) || request.resource.data.groupId == resource.data.groupId)
+          && (!('createdByEmail' in resource.data) 
+              || resource.data.createdByEmail == '' 
+              || !('createdByEmail' in request.resource.data)
+              || request.resource.data.createdByEmail == resource.data.createdByEmail);
     }
 
     function validGroupCreate() {
@@ -363,7 +384,9 @@ service cloud.firestore {
     }
 
     match /chats/{chatId} {
-      allow get, list: if isChatParticipant(resource.data);
+      allow get: if isChatParticipant(resource.data);
+      allow list: if signedIn()
+          && currentEmail() in resource.data.participants;
       allow create: if validChatData(request.resource.data);
       allow update: if isChatParticipant(resource.data)
           && request.resource.data.participants == resource.data.participants;
@@ -378,8 +401,13 @@ service cloud.firestore {
     }
 
     match /notes/{noteId} {
-      allow get: if signedIn();
-      allow list: if canReadNote(resource.data);
+      allow get: if canReadNote(resource.data);
+      allow list: if signedIn() && (
+        resource.data.userId == request.auth.uid
+        || currentEmail() in resource.data.sharedWith
+        || currentEmail() in resource.data.assigneeEmails
+        || (resource.data.groupId != '' && isGroupMember(resource.data.groupId))
+      );
       allow create: if validNoteCreate();
       allow update: if validNoteContentUpdate(resource.data)
           || noteMetadataOnlyUpdate(resource.data)
@@ -414,21 +442,26 @@ service cloud.firestore {
     }
 
     match /note_invites/{inviteId} {
-      allow get, list: if signedIn()
+      allow get: if signedIn()
           && (
-            resource.data.toEmail == currentEmail()
-            || resource.data.fromEmail == currentEmail()
+            resource.data.targetEmail == currentEmail()
+            || resource.data.senderEmail == currentEmail()
             || (noteExists(resource.data.noteId)
                 && canManageNote(noteDoc(resource.data.noteId).data))
           );
+      allow list: if signedIn()
+          && (
+            resource.data.targetEmail == currentEmail()
+            || resource.data.senderEmail == currentEmail()
+          );
       allow create: if signedIn()
-          && request.resource.data.fromEmail == currentEmail()
+          && request.resource.data.senderEmail == currentEmail()
           && noteExists(request.resource.data.noteId)
           && canManageNote(noteDoc(request.resource.data.noteId).data);
       allow update, delete: if signedIn()
           && (
-            resource.data.toEmail == currentEmail()
-            || resource.data.fromEmail == currentEmail()
+            resource.data.targetEmail == currentEmail()
+            || resource.data.senderEmail == currentEmail()
             || (noteExists(resource.data.noteId)
                 && canManageNote(noteDoc(resource.data.noteId).data))
           );
@@ -436,7 +469,10 @@ service cloud.firestore {
 
     match /groups/{groupId} {
       allow get: if signedIn();
-      allow list: if isAdmin() || isGroupMember(groupId);
+      allow list: if signedIn() && (
+        currentEmail() in resource.data.members
+        || currentEmail() in resource.data.memberEmails
+      );
       allow create: if validGroupCreate();
       allow update: if groupManagerUpdate(groupId)
           || groupMemberRuntimeUpdate(groupId)
@@ -482,10 +518,15 @@ service cloud.firestore {
     }
 
     match /group_invites/{inviteId} {
-      allow get, list: if signedIn()
+      allow get: if signedIn()
           && (
             resource.data.toEmail == currentEmail()
             || canManageGroup(resource.data.groupId)
+          );
+      allow list: if signedIn()
+          && (
+            resource.data.toEmail == currentEmail()
+            || resource.data.fromEmail == currentEmail()
           );
       allow create: if signedIn()
           && request.resource.data.fromEmail == currentEmail()
@@ -498,10 +539,15 @@ service cloud.firestore {
     }
 
     match /group_requests/{requestId} {
-      allow get, list: if signedIn()
+      allow get: if signedIn()
           && (
             resource.data.userEmail == currentEmail()
             || canManageGroup(resource.data.groupId)
+          );
+      allow list: if signedIn()
+          && (
+            resource.data.userEmail == currentEmail()
+            || resource.data.leaderId == currentUid()
           );
       allow create: if signedIn()
           && request.resource.data.userEmail == currentEmail()

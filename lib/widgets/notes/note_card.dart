@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import '../../models/app_models.dart';
 import '../../controllers/app_state.dart';
 import '../../views/note_detail_screen.dart';
+import '../success_animation.dart';
 
 class NoteCard extends StatelessWidget {
   final Note note;
@@ -39,7 +40,9 @@ class NoteCard extends StatelessWidget {
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    final isOwner = note.createdByEmail.toLowerCase().trim() == myEmail;
+    final myUid = FirebaseService.currentUid;
+    final isOwner = note.createdByEmail.toLowerCase().trim() == myEmail ||
+                    (note.userId.isNotEmpty && note.userId == myUid);
     
     var accentColor = note.coverColor;
     if (isDark) {
@@ -143,11 +146,11 @@ class NoteCard extends StatelessWidget {
                         Row(
                           children: [
                             Expanded(
-                              child: LinearProgressIndicator(
+                              child: AnimatedProgressBar(
                                 value: progress,
                                 backgroundColor: colorScheme.surfaceContainerHighest,
                                 color: accentColor,
-                                minHeight: 6,
+                                height: 6,
                               ),
                             ),
                             const SizedBox(width: 8),

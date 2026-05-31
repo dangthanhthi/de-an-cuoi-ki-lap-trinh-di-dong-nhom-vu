@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 
 class AdminManageUsersScreen extends StatefulWidget {
   const AdminManageUsersScreen({super.key});
@@ -13,15 +14,24 @@ class AdminManageUsersScreen extends StatefulWidget {
 
 class _AdminManageUsersScreenState extends State<AdminManageUsersScreen> {
   String _searchQuery = '';
+  final FocusNode _searchFocusNode = FocusNode();
+  late Stream<QuerySnapshot> _allUsersStream;
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _allUsersStream = FirebaseService.getAllUsersStream();
+  }
 
   void _showMessage(String message, {bool success = true}) {
-    final colorScheme = Theme.of(context).colorScheme;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success ? Colors.green : colorScheme.error,
-      ),
-    );
+    if (!mounted) return;
+    SnackUtils.show(context, message, success: success);
   }
 
   Future<void> _confirmRoleChange({
@@ -250,6 +260,14 @@ class _AdminManageUsersScreenState extends State<AdminManageUsersScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     final colorScheme = Theme.of(context).colorScheme;
     final mutedText = colorScheme.onSurfaceVariant;
     return Scaffold(
@@ -266,6 +284,7 @@ class _AdminManageUsersScreenState extends State<AdminManageUsersScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: TextField(
+              focusNode: _searchFocusNode,
               onChanged: (value) => setState(() => _searchQuery = value),
               decoration: InputDecoration(
                 hintText: 'Tìm kiếm người dùng...',
@@ -281,8 +300,12 @@ class _AdminManageUsersScreenState extends State<AdminManageUsersScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getAllUsersStream(),
+              stream: _allUsersStream,
               builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  debugPrint('Error loading all users stream: ${snapshot.error}');
+                  return const Center(child: Text('Không tải được danh sách người dùng'));
+                }
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }

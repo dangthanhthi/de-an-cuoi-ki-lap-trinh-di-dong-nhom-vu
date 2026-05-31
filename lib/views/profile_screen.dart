@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 import 'activity_history_screen.dart';
 import 'admin_manage_users_screen.dart';
 import 'app_settings_screen.dart';
@@ -22,14 +23,17 @@ class ProfileScreen extends StatefulWidget {
 class _ProfileScreenState extends State<ProfileScreen> {
   final ImagePicker _imagePicker = ImagePicker();
   bool _isUpdatingAvatar = false;
+  late Stream<DocumentSnapshot> _userProfileStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _userProfileStream = FirebaseService.getUserProfileStream();
+  }
 
   void _showMessage(String message, {bool success = true}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success ? Colors.green : Colors.red,
-      ),
-    );
+    if (!mounted) return;
+    SnackUtils.show(context, message, success: success);
   }
 
   Future<bool> _requestGalleryPermission() async {
@@ -281,8 +285,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseService.getUserProfileStream(),
+      stream: _userProfileStream,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          debugPrint('Error loading user profile stream: ${snapshot.error}');
+          return const Scaffold(
+            body: Center(child: Text('Không tải được thông tin cá nhân')),
+          );
+        }
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),

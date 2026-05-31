@@ -5,6 +5,7 @@ import '../models/app_models.dart';
 import '../controllers/firebase_service.dart';
 import '../controllers/app_state.dart';
 import 'media_utils.dart';
+import 'snack_utils.dart';
 
 class NoteUtils {
   static void showShareSheet(BuildContext context, Note note, {VoidCallback? onShareSuccess}) async {
@@ -166,12 +167,7 @@ class NoteUtils {
                                 .get();
                             if (checkUser.docs.isEmpty) {
                               if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Tài khoản "$typedEmail" không tồn tại!'),
-                                  backgroundColor: Colors.red,
-                                ),
-                              );
+                              SnackUtils.show(context, 'Tài khoản "$typedEmail" không tồn tại!', success: false);
                               return;
                             }
                             finalEmails.add(typedEmail);
@@ -181,7 +177,6 @@ class NoteUtils {
                           
                           if (finalEmails.isNotEmpty) {
                             if (!context.mounted) return;
-                            final scaffoldMsg = ScaffoldMessenger.of(context);
                             final navigator = Navigator.of(context);
 
                             for (String targetEmail in finalEmails) {
@@ -189,9 +184,9 @@ class NoteUtils {
                             }
                             
                             navigator.pop();
-                            scaffoldMsg.showSnackBar(
-                              SnackBar(content: Text('Đã chia sẻ thành công với ${finalEmails.length} người')),
-                            );
+                            if (context.mounted) {
+                              SnackUtils.show(context, 'Đã chia sẻ thành công với ${finalEmails.length} người');
+                            }
                             onShareSuccess?.call();
                           } else {
                             if (context.mounted) Navigator.of(context).pop();

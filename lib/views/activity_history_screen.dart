@@ -11,9 +11,31 @@ class ActivityHistoryScreen extends StatefulWidget {
 
 class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
   String _searchQuery = '';
+  final FocusNode _searchFocusNode = FocusNode();
+  late Stream<QuerySnapshot> _activitiesStream;
+
+  @override
+  void dispose() {
+    _searchFocusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _activitiesStream = FirebaseService.getActivitiesStream();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_searchFocusNode.hasFocus) {
+          _searchFocusNode.unfocus();
+        }
+      });
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('Lịch sử hoạt động'),
@@ -56,6 +78,7 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
             child: TextField(
+              focusNode: _searchFocusNode,
               onChanged: (value) => setState(() => _searchQuery = value),
               decoration: InputDecoration(
                 hintText: 'Tìm kiếm lịch sử...',
@@ -71,7 +94,7 @@ class _ActivityHistoryScreenState extends State<ActivityHistoryScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getActivitiesStream(),
+              stream: _activitiesStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());

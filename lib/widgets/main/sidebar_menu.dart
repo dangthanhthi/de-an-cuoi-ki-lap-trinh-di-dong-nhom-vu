@@ -8,9 +8,31 @@ import '../../views/calendar_screen.dart';
 import '../../views/contacts_screen.dart';
 import '../../views/groups_list_screen.dart';
 import '../../views/statistics_screen.dart';
-
-class SidebarMenu extends StatelessWidget {
+class SidebarMenu extends StatefulWidget {
   const SidebarMenu({super.key});
+
+  @override
+  State<SidebarMenu> createState() => _SidebarMenuState();
+}
+
+class _SidebarMenuState extends State<SidebarMenu> {
+  late Stream<int> _unreadSharedNotesCountStream;
+  late Stream<int> _unreadGroupMessagesCountStream;
+  late Stream<QuerySnapshot> _groupInvitesStream;
+  late Stream<QuerySnapshot> _groupRequestsForLeaderStream;
+  late Stream<int> _unreadChatMessagesCountStream;
+  late Stream<QuerySnapshot> _friendRequestsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _unreadSharedNotesCountStream = FirebaseService.unreadSharedNotesCountStream();
+    _unreadGroupMessagesCountStream = FirebaseService.unreadGroupMessagesCountStream();
+    _groupInvitesStream = FirebaseService.getGroupInvitesStream();
+    _groupRequestsForLeaderStream = FirebaseService.getGroupRequestsForLeaderStream();
+    _unreadChatMessagesCountStream = FirebaseService.unreadChatMessagesCountStream();
+    _friendRequestsStream = FirebaseService.getFriendRequestsStream();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -70,7 +92,7 @@ class SidebarMenu extends StatelessWidget {
             },
           ),
           StreamBuilder<int>(
-            stream: FirebaseService.unreadSharedNotesCountStream(),
+            stream: _unreadSharedNotesCountStream,
             builder: (context, sharedCountSnap) {
               return _DrawerItem(
                 icon: Icons.people_outline_rounded,
@@ -99,13 +121,13 @@ class SidebarMenu extends StatelessWidget {
           const Divider(height: 16),
           const _DrawerSectionLabel('Nhóm'),
           StreamBuilder<int>(
-            stream: FirebaseService.unreadGroupMessagesCountStream(),
+            stream: _unreadGroupMessagesCountStream,
             builder: (context, unreadSnap) {
               return StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.getGroupInvitesStream(),
+                stream: _groupInvitesStream,
                 builder: (context, invitesSnap) {
                   return StreamBuilder<QuerySnapshot>(
-                    stream: FirebaseService.getGroupRequestsForLeaderStream(),
+                    stream: _groupRequestsForLeaderStream,
                     builder: (context, requestsSnap) {
                       final total = (invitesSnap.data?.docs.length ?? 0) +
                           (requestsSnap.data?.docs.length ?? 0) +
@@ -162,10 +184,10 @@ class SidebarMenu extends StatelessWidget {
           const Divider(height: 16),
           const _DrawerSectionLabel('Liên lạc'),
           StreamBuilder<int>(
-            stream: FirebaseService.unreadChatMessagesCountStream(),
+            stream: _unreadChatMessagesCountStream,
             builder: (context, unreadSnap) {
               return StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.getFriendRequestsStream(),
+                stream: _friendRequestsStream,
                 builder: (context, snapshot) {
                   final friendCount = snapshot.data?.docs.length ?? 0;
                   final unreadCount = unreadSnap.data ?? 0;

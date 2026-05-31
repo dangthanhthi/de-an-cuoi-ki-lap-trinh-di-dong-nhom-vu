@@ -9,10 +9,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:easy_image_viewer/easy_image_viewer.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 import 'message_details_screen.dart';
+import 'image_grid_preview_screen.dart';
 import 'components/message_context_menu.dart';
 import '../widgets/common/multi_image_gallery.dart';
 
@@ -38,21 +42,34 @@ class _ChatScreenState extends State<ChatScreen> {
   final stt.SpeechToText _speech = stt.SpeechToText();
 
   bool _isSending = false;
-  bool _isUploading = false;
   bool _isListening = false;
   bool _isMuted = false;
   bool _isPinned = false;
   String _liveSpeechText = '';
   String _lastInsertedSpeech = '';
   List<String> _attachments = [];
+  final List<Map<String, dynamic>> _uploadingAttachments = [];
   Map<String, dynamic>? _replyingTo;
   String? _editingMessageId;
   final ScrollController _scrollController = ScrollController();
   final ExpansibleController _pinnedController = ExpansibleController();
+  late final Stream<QuerySnapshot> _messagesStream;
+  late final Stream<QuerySnapshot> _pinnedStream;
 
   @override
   void initState() {
     super.initState();
+    _messagesStream = FirebaseService.getMessagesStream(widget.friendEmail);
+    final chatId = FirebaseService.chatIdForEmails(
+      AppState.currentUserEmail,
+      widget.friendEmail,
+    );
+    _pinnedStream = FirebaseFirestore.instance
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .where('isPinned', isEqualTo: true)
+        .snapshots();
     FirebaseService.markChatAsRead(widget.friendEmail);
     _loadChatMeta();
   }
@@ -80,13 +97,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
 
   void _showSnack(String message, {bool success = true}) {
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success ? null : Theme.of(context).colorScheme.error,
-      ),
-    );
+    SnackUtils.show(context, message, success: success);
   }
 
   String _formatMessageTime(dynamic rawValue) {
@@ -346,7 +357,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
-    if ((text.isEmpty && _attachments.isEmpty) || _isSending || _isUploading) {
+    if ((text.isEmpty && _attachments.isEmpty) || _isSending || _uploadingAttachments.isNotEmpty) {
       return;
     }
 
@@ -1052,8 +1063,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickImageAttachment(ImageSource source) async {
-    if (_isUploading) return;
-
     if (source == ImageSource.camera) {
       final cameraStatus = await Permission.camera.request();
       if (!cameraStatus.isGranted) {
@@ -1068,11 +1077,15 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     if (source == ImageSource.gallery) {
-      final images = await _imagePicker.pickMultiImage(
+      var images = await _imagePicker.pickMultiImage(
         imageQuality: 40,
         maxWidth: 500,
       );
       if (images.isNotEmpty) {
+        if (images.length > 15) {
+          _showSnack('Chỉ được chọn tối đa 15 ảnh mỗi lần. Đã lấy 15 ảnh đầu tiên.', success: false);
+          images = images.sublist(0, 15);
+        }
         for (final img in images) {
           final file = File(img.path);
           final fileSize = await file.length();
@@ -1098,12 +1111,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
 
       final fileName = image.name.isNotEmpty ? image.name : 'image.jpg';
-      await _uploadAttachmentFile(file, fileName, fileSize);
+      _uploadAttachmentFile(file, fileName, fileSize);
     }
   }
 
   Future<void> _pickFileAttachment() async {
-    if (_isUploading) return;
     if (Platform.isAndroid) {
       await Permission.storage.request();
     }
@@ -1126,7 +1138,21 @@ class _ChatScreenState extends State<ChatScreen> {
     String fileName,
     int fileSize,
   ) async {
-    setState(() => _isUploading = true);
+    if (fileSize > FirebaseService.maxAttachmentBytes) {
+      _showSnack('Tệp vượt quá 30MB. Vui lòng chọn tệp nhỏ hơn.', success: false);
+      return;
+    }
+
+    final uploadId = '${DateTime.now().millisecondsSinceEpoch}_$fileName';
+    final uploadItem = {
+      'id': uploadId,
+      'name': fileName,
+    };
+
+    setState(() {
+      _uploadingAttachments.add(uploadItem);
+    });
+
     try {
       final url = await FirebaseService.uploadAttachmentFile(
         file,
@@ -1135,11 +1161,22 @@ class _ChatScreenState extends State<ChatScreen> {
       );
       if (url.isEmpty) throw Exception('Không tải được tệp lên.');
       if (!mounted) return;
-      setState(() => _attachments.add(url));
+
+      bool wasCancelled = true;
+      setState(() {
+        wasCancelled = !_uploadingAttachments.any((item) => item['id'] == uploadId);
+        _uploadingAttachments.removeWhere((item) => item['id'] == uploadId);
+        if (!wasCancelled) {
+          _attachments.add(url);
+        }
+      });
     } catch (e) {
-      _showSnack('Lỗi đính kèm: $e', success: false);
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
+      if (mounted) {
+        setState(() {
+          _uploadingAttachments.removeWhere((item) => item['id'] == uploadId);
+        });
+        _showSnack('Lỗi đính kèm: $e', success: false);
+      }
     }
   }
 
@@ -1168,55 +1205,86 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  void _showImagePreview(String value, int index) {
-    showDialog(
-      context: context,
-      builder: (ctx) => Dialog.fullscreen(
-        backgroundColor: Colors.black,
-        child: Stack(
-          children: [
-            Center(
-              child: InteractiveViewer(
-                minScale: 0.5,
-                maxScale: 4.0,
-                child: _AttachmentImage(
-                  value: value,
-                  fit: BoxFit.contain,
-                ),
-              ),
-            ),
-            Positioned(
-              top: 40,
-              right: 20,
-              child: IconButton(
-                onPressed: () => Navigator.pop(ctx),
-                icon: const Icon(Icons.close, color: Colors.white, size: 30),
-              ),
-            ),
-          ],
+  void _showImagePreview(List<String> imagesOnly, int initialIndex) {
+    if (imagesOnly.length > 1) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageGridPreviewScreen(
+            images: imagesOnly,
+            initialIndex: initialIndex,
+          ),
         ),
-      ),
+      );
+      return;
+    }
+    final List<ImageProvider> providers = [];
+    for (final value in imagesOnly) {
+      final bytes = bytesFromDataUri(value);
+      if (bytes != null) {
+        providers.add(MemoryImage(bytes));
+      } else {
+        providers.add(CachedNetworkImageProvider(value));
+      }
+    }
+    if (providers.isEmpty) return;
+
+    showImageViewerPager(
+      context,
+      MultiImageProvider(providers, initialIndex: initialIndex),
+      swipeDismissible: true,
+      doubleTapZoomable: true,
     );
   }
 
   Widget _buildDraftAttachments() {
-    if (_attachments.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          for (var i = 0; i < _attachments.length; i++)
-            InputChip(
-              avatar: Icon(
-                isImageValue(_attachments[i]) ? Icons.image_outlined : Icons.attach_file,
-                size: 18,
+    if (_attachments.isEmpty && _uploadingAttachments.isEmpty) return const SizedBox.shrink();
+    return Container(
+      height: 48,
+      margin: const EdgeInsets.only(bottom: 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (var i = 0; i < _attachments.length; i++) ...[
+              InputChip(
+                avatar: Icon(
+                  isImageValue(_attachments[i]) ? Icons.image_outlined : Icons.attach_file,
+                  size: 18,
+                ),
+                label: Text(attachmentLabel(_attachments[i], i)),
+                onDeleted: () => setState(() => _attachments.removeAt(i)),
+                onPressed: () {
+                  if (isImageValue(_attachments[i])) {
+                    _showImagePreview([_attachments[i]], 0);
+                  } else {
+                    _openAttachment(_attachments[i], i);
+                  }
+                },
               ),
-              label: Text(attachmentLabel(_attachments[i], i)),
-              onDeleted: () => setState(() => _attachments.removeAt(i)),
-            ),
-        ],
+              const SizedBox(width: 8),
+            ],
+            for (var item in _uploadingAttachments) ...[
+              InputChip(
+                avatar: const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                ),
+                label: Text(
+                  item['name'] as String,
+                  style: const TextStyle(fontStyle: FontStyle.italic),
+                ),
+                onDeleted: () {
+                  setState(() {
+                    _uploadingAttachments.removeWhere((x) => x['id'] == item['id']);
+                  });
+                },
+              ),
+              const SizedBox(width: 8),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -1225,6 +1293,7 @@ class _ChatScreenState extends State<ChatScreen> {
     List<String> attachments,
     bool isMe,
     ColorScheme colorScheme,
+    double maxGalleryWidth,
   ) {
     final images = attachments.where((a) => isImageValue(a)).toList();
     final files = attachments.where((a) => !isImageValue(a)).toList();
@@ -1236,10 +1305,9 @@ class _ChatScreenState extends State<ChatScreen> {
           MultiImageGallery(
             images: images,
             onTapImage: (index) {
-              final originalIndex = attachments.indexOf(images[index]);
-              _showImagePreview(images[index], originalIndex);
+              _showImagePreview(images, index);
             },
-            maxWidth: MediaQuery.of(context).size.width * 0.7,
+            maxWidth: maxGalleryWidth,
           ),
           if (files.isNotEmpty) const SizedBox(height: 8),
         ],
@@ -1399,17 +1467,8 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildPinnedMessagesBar(List<QueryDocumentSnapshot> allMessages) {
-    final chatId = FirebaseService.chatIdForEmails(
-      AppState.currentUserEmail,
-      widget.friendEmail,
-    );
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance
-          .collection('chats')
-          .doc(chatId)
-          .collection('messages')
-          .where('isPinned', isEqualTo: true)
-          .snapshots(),
+      stream: _pinnedStream,
       builder: (context, snapshot) {
         final docs = snapshot.data?.docs ?? [];
         if (docs.isEmpty) return const SizedBox.shrink();
@@ -1533,9 +1592,25 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseService.getMessagesStream(widget.friendEmail),
+        stream: _messagesStream,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
+          if (snapshot.hasError) {
+            debugPrint('Error loading chat messages: ${snapshot.error}');
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.error_outline, size: 48, color: colorScheme.error),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Đã xảy ra lỗi khi tải tin nhắn',
+                    style: TextStyle(color: colorScheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+            );
+          }
+          if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
           final allDocs = snapshot.data?.docs ?? [];
@@ -1770,7 +1845,16 @@ class _ChatScreenState extends State<ChatScreen> {
                                                 ),
                                               ),
                                             if (!isRecalled && attachments.isNotEmpty)
-                                              _buildMessageAttachments(attachments, isMe, colorScheme),
+                                              _buildMessageAttachments(
+                                                attachments,
+                                                isMe,
+                                                colorScheme,
+                                                MediaQuery.of(context).size.width * (isMe ? 0.78 : 0.72) -
+                                                    ((text.trim().isEmpty && attachments.every((a) => isImageValue(a)))
+                                                        ? 0.0
+                                                        : 28.0) -
+                                                    6.0,
+                                              ),
                                             Text(
                                               text,
                                               style: TextStyle(
@@ -1935,12 +2019,12 @@ class _ChatScreenState extends State<ChatScreen> {
                           children: [
                             IconButton(
                               tooltip: 'Ảnh',
-                              onPressed: _isUploading ? null : _showImageSourceSheet,
+                              onPressed: _showImageSourceSheet,
                               icon: const Icon(Icons.image_outlined),
                             ),
                             IconButton(
                               tooltip: 'Tệp',
-                              onPressed: _isUploading ? null : _pickFileAttachment,
+                              onPressed: _pickFileAttachment,
                               icon: const Icon(Icons.attach_file),
                             ),
                             IconButton(
@@ -1948,15 +2032,6 @@ class _ChatScreenState extends State<ChatScreen> {
                               onPressed: _toggleVoiceInput,
                               icon: Icon(_isListening ? Icons.stop_circle : Icons.mic_none),
                             ),
-                            if (_isUploading)
-                              const Padding(
-                                padding: EdgeInsets.only(left: 6),
-                                child: SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              ),
                             const SizedBox(width: 4),
                             Expanded(
                               child: TextField(
@@ -1979,7 +2054,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             ),
                             const SizedBox(width: 8),
                             IconButton.filled(
-                              onPressed: _isSending || _isUploading
+                              onPressed: _isSending || _uploadingAttachments.isNotEmpty
                                   ? null
                                   : () {
                                       HapticFeedback.lightImpact();
@@ -2011,36 +2086,3 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-class _AttachmentImage extends StatelessWidget {
-  final String value;
-  final BoxFit fit;
-
-  const _AttachmentImage({required this.value, this.fit = BoxFit.cover});
-
-  @override
-  Widget build(BuildContext context) {
-    final bytes = bytesFromDataUri(value);
-    if (bytes != null) return Image.memory(bytes, fit: fit);
-    return Image.network(
-      value,
-      fit: fit,
-      errorBuilder: (context, error, stackTrace) => Container(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
-        alignment: Alignment.center,
-        child: const Icon(Icons.broken_image_outlined),
-      ),
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) return child;
-        return Container(
-          color: Theme.of(context).colorScheme.surfaceContainerHigh,
-          alignment: Alignment.center,
-          child: const SizedBox(
-            width: 24,
-            height: 24,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        );
-      },
-    );
-  }
-}

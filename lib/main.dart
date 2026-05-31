@@ -155,6 +155,7 @@ class SNoteApp extends StatelessWidget {
       valueListenable: AppState.themeModeNotifier,
       builder: (context, themeMode, _) {
         return MaterialApp(
+          navigatorKey: AppState.navigatorKey,
           title: 'SNote',
           debugShowCheckedModeBanner: false,
           themeMode: themeMode,

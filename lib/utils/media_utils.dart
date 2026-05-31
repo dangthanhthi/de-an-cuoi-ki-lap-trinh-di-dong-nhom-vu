@@ -52,12 +52,18 @@ String buildDataUri(Uint8List bytes, String fileName, {String? mimeType}) {
 
 bool isDataUri(String value) => value.startsWith('data:');
 
+final Map<String, Uint8List> _base64Cache = {};
+
 Uint8List? bytesFromDataUri(String value) {
   if (!isDataUri(value)) return null;
+  final cached = _base64Cache[value];
+  if (cached != null) return cached;
   final commaIndex = value.indexOf(',');
   if (commaIndex < 0) return null;
   try {
-    return base64Decode(value.substring(commaIndex + 1));
+    final decoded = base64Decode(value.substring(commaIndex + 1));
+    _base64Cache[value] = decoded;
+    return decoded;
   } catch (_) {
     return null;
   }

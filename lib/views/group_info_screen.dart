@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 import '../widgets/ui_state_view.dart';
 
 class GroupInfoScreen extends StatefulWidget {
@@ -24,17 +25,27 @@ class GroupInfoScreen extends StatefulWidget {
 
 class _GroupInfoScreenState extends State<GroupInfoScreen> {
   final ImagePicker _imagePicker = ImagePicker();
+  late Stream<DocumentSnapshot> _groupStream;
+  late Stream<QuerySnapshot> _allUsersStream;
+  late Stream<QuerySnapshot> _presenceStream;
+  late Stream<QuerySnapshot> _groupRequestsStream;
+  late Stream<QuerySnapshot> _groupActivitiesStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _groupStream = FirebaseService.getGroupStream(widget.groupId);
+    _allUsersStream = FirebaseFirestore.instance.collection('users').snapshots();
+    _presenceStream = FirebaseFirestore.instance
+        .collection('presence')
+        .where('groupId', isEqualTo: widget.groupId)
+        .snapshots();
+    _groupRequestsStream = FirebaseService.getGroupRequestsForLeaderStream();
+    _groupActivitiesStream = FirebaseService.getGroupActivitiesStream(widget.groupId);
+  }
 
   void _showSnack(String message, {bool success = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: success
-            ? Colors.green
-            : Theme.of(context).colorScheme.error,
-      ),
-    );
+    SnackUtils.show(context, message, success: success);
   }
 
   Future<void> _changeGroupAvatar() async {
@@ -399,7 +410,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
 
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseService.getGroupStream(widget.groupId),
+      stream: _groupStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
@@ -450,6 +461,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         final isLeader = leaderId == FirebaseService.currentUid;
         final isManager = !isLeader && managerEmails.contains(myEmail);
         final canManage = isLeader || isManager;
+        final requiresApproval = data['requiresApproval'] == true;
         final roleLabel = isLeader
             ? 'Key vàng • Trưởng nhóm'
             : isManager
@@ -576,10 +588,12 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   _QuickActionTile(
                     icon: Icons.person_add_alt_1_outlined,
                     title: 'Thêm thành viên',
-                    subtitle: isLeader
-                        ? 'Mời thêm người vào nhóm'
-                        : 'Chỉ trưởng nhóm được thêm người',
-                    onTap: isLeader ? _showAddMemberDialog : null,
+                    subtitle: canManage
+                        ? 'Mời trực tiếp người khác vào nhóm'
+                        : (requiresApproval
+                            ? 'Mời thành viên mới (Cần duyệt)'
+                            : 'Mời thêm người vào nhóm'),
+                    onTap: _showAddMemberDialog,
                   ),
                   _QuickActionTile(
                     icon: canManage
@@ -614,9 +628,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               ),
               const SizedBox(height: 10),
               StreamBuilder<QuerySnapshot>(
-                stream: FirebaseFirestore.instance
-                    .collection('users')
-                    .snapshots(),
+                stream: _allUsersStream,
                 builder: (context, usersSnapshot) {
                   if (usersSnapshot.hasError) {
                     return const Padding(
@@ -803,10 +815,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
-          stream: FirebaseFirestore.instance
-              .collection('presence')
-              .where('groupId', isEqualTo: widget.groupId)
-              .snapshots(),
+          stream: _presenceStream,
           builder: (context, snapshot) {
             if (snapshot.hasError) return const SizedBox();
             final docs = snapshot.data?.docs ?? [];
@@ -920,7 +929,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
-          stream: FirebaseService.getGroupRequestsForLeaderStream(),
+          stream: _groupRequestsStream,
           builder: (context, snapshot) {
             if (snapshot.hasError) return const SizedBox();
             final docs = (snapshot.data?.docs ?? []).where((d) {
@@ -956,7 +965,21 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       ),
                     ),
                     title: Text(data['userName'] ?? 'Người dùng'),
-                    subtitle: Text(data['userEmail'] ?? ''),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(data['userEmail'] ?? ''),
+                        if (data['invitedByName'] != null || data['invitedBy'] != null)
+                          Text(
+                            'Được mời bởi: ${data['invitedByName'] ?? data['invitedBy']}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                      ],
+                    ),
                     trailing: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -1000,7 +1023,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         ),
         const SizedBox(height: 8),
         StreamBuilder<QuerySnapshot>(
-          stream: FirebaseService.getGroupActivitiesStream(widget.groupId),
+          stream: _groupActivitiesStream,
           builder: (context, snapshot) {
             if (snapshot.hasError) return const SizedBox();
             final docs = snapshot.data?.docs ?? [];
@@ -1615,6 +1638,9 @@ class _AddMemberDialogState extends State<_AddMemberDialog> {
       if (result == "SUCCESS") {
         Navigator.pop(context);
         widget.onSuccess("Đã gửi lời mời vào nhóm cho $email");
+      } else if (result == "SUCCESS_PENDING_APPROVAL") {
+        Navigator.pop(context);
+        widget.onSuccess("Yêu cầu thêm $email đã được gửi cho trưởng nhóm duyệt");
       } else {
         setState(() => _isSaving = false);
         widget.onError(result);

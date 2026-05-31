@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../controllers/app_state.dart';
 import '../controllers/notification_service.dart';
+import '../utils/snack_utils.dart';
 import 'main_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -148,22 +149,8 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _showError(String message) {
-    final theme = Theme.of(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          message,
-          style: TextStyle(
-            color: theme.colorScheme.onError,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: theme.colorScheme.error,
-        behavior: SnackBarBehavior.floating,
-        margin: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      ),
-    );
+    if (!mounted) return;
+    SnackUtils.show(context, message, success: false);
   }
 
   @override

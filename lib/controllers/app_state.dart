@@ -9,6 +9,7 @@ import 'firebase_service.dart';
 export 'firebase_service.dart';
 
 class AppState {
+  static final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
   static String currentUserEmail = "";
   static String currentUserName = "";
   static String currentUserAvatar =
@@ -60,6 +61,8 @@ class AppState {
 
   static const String _prefDarkModeKey = 'app_dark_mode';
   static const String _prefNotificationsKey = 'app_notifications_enabled';
+  static final Set<String> dismissedOverdueTodos = {};
+  static const String _prefDismissedOverdueKey = 'dismissed_overdue_todos';
 
   static bool get isDarkModeActive {
     final themeMode = themeModeNotifier.value;
@@ -91,6 +94,17 @@ class AppState {
       notificationsEnabledNotifier.value =
           prefs.getBool(_prefNotificationsKey) ?? true;
     }
+    if (prefs.containsKey(_prefDismissedOverdueKey)) {
+      final list = prefs.getStringList(_prefDismissedOverdueKey) ?? [];
+      dismissedOverdueTodos.clear();
+      dismissedOverdueTodos.addAll(list);
+    }
+  }
+
+  static Future<void> dismissOverdueTodo(String key) async {
+    dismissedOverdueTodos.add(key);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_prefDismissedOverdueKey, dismissedOverdueTodos.toList());
   }
 
   static Future<void> persistLocalSettings({
@@ -118,6 +132,7 @@ class AppState {
     filteredNotes.clear();
     activities.clear();
     contacts.clear();
+    dismissedOverdueTodos.clear();
     LocalService.clearSyncQueue();
     LocalService.clearNotesCache();
   }

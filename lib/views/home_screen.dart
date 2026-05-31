@@ -15,6 +15,7 @@ import '../widgets/notes/filter_sheet.dart';
 import '../utils/note_utils.dart';
 import 'requests_screen.dart';
 import 'create_edit_note_screen.dart';
+import '../utils/snack_utils.dart';
 import '../widgets/notes/kanban_view.dart';
 import 'package:animate_do/animate_do.dart';
 
@@ -28,12 +29,32 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late StreamSubscription<List<ConnectivityResult>> _connectivitySubscription;
   bool _isOffline = false;
+  late Stream<int> _bellRequestsCountStream;
+  Set<String> _myLedGroupIds = {};
+  StreamSubscription? _myGroupsSubscription;
 
   @override
   void initState() {
     super.initState();
+    _bellRequestsCountStream = FirebaseService.bellRequestsCountStream();
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen(_updateConnectionStatus);
     _checkInitialConnection();
+
+    _myGroupsSubscription = FirebaseService.getMyGroupsStream().listen((snapshot) {
+      final myUid = FirebaseService.currentUid;
+      final ledGroups = snapshot.docs
+          .where((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            return data['leaderId'] == myUid;
+          })
+          .map((doc) => doc.id)
+          .toSet();
+      if (mounted) {
+        setState(() {
+          _myLedGroupIds = ledGroups;
+        });
+      }
+    });
   }
 
   Future<void> _checkInitialConnection() async {
@@ -55,6 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _connectivitySubscription.cancel();
+    _myGroupsSubscription?.cancel();
     super.dispose();
   }
 
@@ -75,12 +97,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           StreamBuilder<int>(
-            stream: FirebaseService.bellRequestsCountStream(),
+            stream: _bellRequestsCountStream,
             builder: (context, snapshot) {
               final count = snapshot.data ?? 0;
+              final overdueCount = _getOverdueCount(noteProvider.allNotes);
+              final totalCount = count + overdueCount;
               return Badge(
-                label: Text('$count'),
-                isLabelVisible: count > 0,
+                label: Text('$totalCount'),
+                isLabelVisible: totalCount > 0,
                 child: IconButton(
                   icon: const Icon(Icons.notifications_outlined),
                   onPressed: () {
@@ -238,6 +262,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showNoteQuickActions(BuildContext context, Note note) {
+    FocusScope.of(context).unfocus();
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final creatorEmail = note.createdByEmail.toLowerCase().trim();
     final isOwner = creatorEmail == myEmail || (creatorEmail.isEmpty && note.groupId.isEmpty);
@@ -287,13 +312,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
                   if (typeName.isNotEmpty && currentTypeCount >= 3) {
                     if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Bạn đã ghim tối đa 3 $typeName'),
-                          backgroundColor: Colors.orange.shade800,
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
+                      SnackUtils.show(context, 'Bạn đã ghim tối đa 3 $typeName', success: false);
                     }
                     return;
                   }
@@ -307,7 +326,12 @@ class _HomeScreenState extends State<HomeScreen> {
               title: const Text('Xóa khỏi màn hình chính'),
               onTap: () async {
                 Navigator.pop(sheetContext);
-                await FirebaseService.hideNoteForMe(note.id);
+                final res = await FirebaseService.hideNoteForMe(note.id);
+                if (res != 'SUCCESS' && context.mounted) {
+                  SnackUtils.show(context, res, success: false);
+                } else if (context.mounted) {
+                  SnackUtils.show(context, 'Đã xóa khỏi màn hình chính');
+                }
               },
             ),
             ListTile(
@@ -343,11 +367,39 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _confirmDelete(BuildContext context, Note note) async {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool hasUnfinishedTasks = false;
+    if (note.isTodo) {
+      if (note.groupId.isEmpty) {
+        hasUnfinishedTasks = note.todos.any((t) => !t.isDone && t.status != TodoStatus.done);
+      } else {
+        hasUnfinishedTasks = note.todos.any((t) =>
+            t.assigneeEmail.toLowerCase().trim() == myEmail &&
+            !t.isDone &&
+            t.status != TodoStatus.done);
+      }
+    }
+
+    final String contentText;
+    if (note.groupId.isNotEmpty) {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc của bạn chưa hoàn thành. Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc chắn muốn xóa không?';
+      } else {
+        contentText = 'Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc không?';
+      }
+    } else {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc chưa hoàn thành. Bạn có chắc chắn muốn xóa ghi chú này không?';
+      } else {
+        contentText = 'Bạn có chắc muốn xóa ghi chú này không?';
+      }
+    }
+
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Xóa ghi chú?'),
-        content: Text('Bạn có chắc muốn xóa "${note.title}" không?'),
+        title: Text(note.groupId.isNotEmpty ? 'Xóa vĩnh viễn?' : 'Xóa ghi chú?'),
+        content: Text(contentText),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
           FilledButton(
@@ -359,8 +411,44 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
     if (ok == true) {
-      await FirebaseService.deleteNote(note.id, note.title);
+      final res = await FirebaseService.deleteNote(note.id, note.title);
+      if (context.mounted) {
+        if (res != 'SUCCESS') {
+          SnackUtils.show(context, res, success: false);
+        } else {
+          SnackUtils.show(context, 'Đã xóa ghi chú vĩnh viễn');
+        }
+      }
     }
+  }
+
+  int _getOverdueCount(List<Note> allNotes) {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    if (myEmail.isEmpty) return 0;
+
+    int count = 0;
+    for (final note in allNotes) {
+      if (note.hiddenBy.contains(myEmail)) continue;
+
+      for (var index = 0; index < note.todos.length; index++) {
+        final todo = note.todos[index];
+        if (!todo.isOverdue || todo.status == TodoStatus.done) continue;
+
+        final assigneeEmail = todo.assigneeEmail.toLowerCase().trim();
+        final assignedToMe = assigneeEmail == myEmail;
+        final unassignedOwnedByMe =
+            assigneeEmail.isEmpty && note.createdByEmail == myEmail;
+        final isGroupLeader = note.groupId.isNotEmpty && _myLedGroupIds.contains(note.groupId);
+
+        if (!assignedToMe && !isGroupLeader && !unassignedOwnedByMe) continue;
+
+        final key = '${note.id}:$index:${todo.deadline?.toIso8601String() ?? ''}';
+        if (AppState.dismissedOverdueTodos.contains(key)) continue;
+
+        count++;
+      }
+    }
+    return count;
   }
 }
 

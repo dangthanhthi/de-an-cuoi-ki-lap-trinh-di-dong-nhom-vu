@@ -1,10 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
 
 import '../controllers/app_state.dart';
 import '../controllers/statistics_controller.dart';
 import 'note_detail_screen.dart';
 import '../models/app_models.dart';
+import '../widgets/success_animation.dart';
 
 class StatisticsScreen extends StatefulWidget {
   const StatisticsScreen({super.key});
@@ -15,6 +17,17 @@ class StatisticsScreen extends StatefulWidget {
 
 class _StatisticsScreenState extends State<StatisticsScreen> {
   int _selectedDays = 7; // 7, 30, 0 (All)
+  late Stream<QuerySnapshot> _myNotesStream;
+  late Stream<QuerySnapshot> _sharedNotesStream;
+  late Stream<QuerySnapshot> _myGroupsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _myNotesStream = FirebaseService.getMyNotesStream();
+    _sharedNotesStream = FirebaseService.getSharedNotesStream();
+    _myGroupsStream = FirebaseService.getMyGroupsStream();
+  }
 
   Future<List<Note>> _loadGroupNotes(List<QueryDocumentSnapshot> groups) async {
     final groupNotes = await Future.wait(
@@ -50,13 +63,13 @@ class _StatisticsScreenState extends State<StatisticsScreen> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseService.getMyNotesStream(),
+        stream: _myNotesStream,
         builder: (context, mySnapshot) {
           return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getSharedNotesStream(),
+            stream: _sharedNotesStream,
             builder: (context, sharedSnapshot) {
               return StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.getMyGroupsStream(),
+                stream: _myGroupsStream,
                 builder: (context, groupSnapshot) {
                   if (mySnapshot.hasError || sharedSnapshot.hasError || groupSnapshot.hasError) {
                     return const Center(child: Text('Không tải được dữ liệu thống kê'));
@@ -416,52 +429,112 @@ class _ActivityBarChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     final maxCount = data.values.fold(0, (max, e) => e > max ? e : max);
+    final double maxY = maxCount == 0 ? 5 : (maxCount + 1).toDouble();
+
     final days = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN'];
-    
+
     return Container(
-      height: 180,
-      padding: const EdgeInsets.all(16),
+      height: 200,
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 12),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        color: colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant.withValues(alpha: 0.5)),
+        border: Border.all(color: colorScheme.outlineVariant.withValues(alpha: 0.5)),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: List.generate(7, (index) {
-          final dayIndex = index + 1;
-          final count = data[dayIndex] ?? 0;
-          final heightFactor = maxCount == 0 ? 0.0 : count / maxCount;
-          
-          return Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                if (count > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text('$count', style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.bold)),
+      child: BarChart(
+        BarChartData(
+          alignment: BarChartAlignment.spaceAround,
+          maxY: maxY,
+          barTouchData: BarTouchData(
+            touchTooltipData: BarTouchTooltipData(
+              tooltipBgColor: colorScheme.primaryContainer,
+              tooltipRoundedRadius: 8,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                return BarTooltipItem(
+                  '${rod.toY.toInt()} việc',
+                  TextStyle(
+                    color: colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.bold,
                   ),
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 6),
-                  height: (100 * heightFactor).clamp(4.0, 100.0),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [color, color.withValues(alpha: 0.6)],
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                    ),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(days[index], style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-              ],
+                );
+              },
             ),
-          );
-        }),
+          ),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                getTitlesWidget: (value, meta) {
+                  final index = value.toInt();
+                  if (index >= 0 && index < 7) {
+                    return SideTitleWidget(
+                      axisSide: meta.axisSide,
+                      child: Text(
+                        days[index],
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colorScheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox();
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: 28,
+                getTitlesWidget: (value, meta) {
+                  if (value == value.toInt().toDouble()) {
+                    return SideTitleWidget(
+                      axisSide: meta.axisSide,
+                      child: Text(
+                        value.toInt().toString(),
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox();
+                },
+              ),
+            ),
+            topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          gridData: FlGridData(
+            show: true,
+            drawVerticalLine: false,
+            getDrawingHorizontalLine: (value) => FlLine(
+              color: colorScheme.outlineVariant.withValues(alpha: 0.3),
+              strokeWidth: 1,
+            ),
+          ),
+          borderData: FlBorderData(show: false),
+          barGroups: List.generate(7, (index) {
+            final dayIndex = index + 1;
+            final count = data[dayIndex] ?? 0;
+            return BarChartGroupData(
+              x: index,
+              barRods: [
+                BarChartRodData(
+                  toY: count.toDouble(),
+                  color: color,
+                  width: 14,
+                  borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+                ),
+              ],
+            );
+          }),
+        ),
       ),
     );
   }
@@ -586,16 +659,12 @@ class _GroupActivityTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          ClipRRect(
+          AnimatedProgressBar(
+            value: efficiency,
+            backgroundColor: colorScheme.outlineVariant.withValues(alpha: 0.2),
+            color: efficiency >= 0.8 ? Colors.green : efficiency >= 0.5 ? colorScheme.primary : colorScheme.error,
+            height: 6,
             borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: efficiency,
-              minHeight: 6,
-              backgroundColor: colorScheme.outlineVariant.withValues(alpha: 0.2),
-              valueColor: AlwaysStoppedAnimation<Color>(
-                efficiency >= 0.8 ? Colors.green : efficiency >= 0.5 ? colorScheme.primary : colorScheme.error,
-              ),
-            ),
           ),
         ],
       ),
@@ -610,25 +679,98 @@ class _PriorityBreakdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final priorities = [NotePriority.urgent, NotePriority.high, NotePriority.medium, NotePriority.low];
-    final colors = [Colors.red.shade900, Colors.red, Colors.orange, Colors.blue];
-    
-    return Column(
-      children: List.generate(priorities.length, (index) {
-        final p = priorities[index];
-        final count = priorityCounts[p] ?? 0;
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Row(
-            children: [
-              Container(width: 12, height: 12, decoration: BoxDecoration(color: colors[index], shape: BoxShape.circle)),
-              const SizedBox(width: 12),
-              Expanded(child: Text(NotePriority.label(p), style: const TextStyle(fontWeight: FontWeight.w500))),
-              Text('$count', style: const TextStyle(fontWeight: FontWeight.bold)),
-            ],
+    final colorScheme = Theme.of(context).colorScheme;
+    final priorities = [
+      NotePriority.urgent,
+      NotePriority.high,
+      NotePriority.medium,
+      NotePriority.low,
+    ];
+    final colors = [
+      Colors.red.shade900,
+      Colors.red.shade500,
+      Colors.orange.shade500,
+      Colors.blue.shade500,
+    ];
+
+    final total = priorities.fold<int>(0, (acc, p) => acc + (priorityCounts[p] ?? 0));
+
+    if (total == 0) {
+      return Container(
+        height: 120,
+        alignment: Alignment.center,
+        child: Text(
+          'Chưa có dữ liệu ưu tiên',
+          style: TextStyle(color: colorScheme.onSurfaceVariant, fontStyle: FontStyle.italic),
+        ),
+      );
+    }
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 130,
+          height: 130,
+          child: PieChart(
+            PieChartData(
+              sectionsSpace: 2,
+              centerSpaceRadius: 35,
+              sections: List.generate(priorities.length, (index) {
+                final p = priorities[index];
+                final count = priorityCounts[p] ?? 0;
+                final percentage = total == 0 ? 0.0 : (count / total * 100);
+                return PieChartSectionData(
+                  color: colors[index],
+                  value: count.toDouble(),
+                  title: count > 0 ? '${percentage.toInt()}%' : '',
+                  radius: 20,
+                  titleStyle: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                );
+              }),
+            ),
           ),
-        );
-      }),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: List.generate(priorities.length, (index) {
+              final p = priorities[index];
+              final count = priorityCounts[p] ?? 0;
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        color: colors[index],
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        NotePriority.label(p),
+                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                      ),
+                    ),
+                    Text(
+                      '$count',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                    ),
+                  ],
+                ),
+              );
+            }),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import '../controllers/ai_service.dart';
 import '../controllers/app_state.dart';
+import '../utils/snack_utils.dart';
 
 /// Màn hình chat với AI.
 /// Có thể mở độc lập (chat tự do) hoặc gắn với 1 ghi chú cụ thể.
@@ -239,25 +240,18 @@ class _AIChatNoteScreenState extends State<AIChatNoteScreen> {
   void _acceptTodos(List<AiTodoSuggestion> todos) {
     if (_isAcceptingTodos) return;
     if (widget.onTodosAccepted == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Mở ghi chú trước để thêm todo vào danh sách nhé!'),
-        ),
-      );
+      SnackUtils.show(context, 'Mở ghi chú trước để thêm todo vào danh sách nhé!', success: false);
       return;
     }
     setState(() => _isAcceptingTodos = true);
     final addedCount = widget.onTodosAccepted!(todos);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          addedCount > 0
-              ? 'Đã thêm $addedCount công việc vào ghi chú!'
-              : 'Các gợi ý này đã có trong ghi chú rồi.',
-        ),
-        backgroundColor: addedCount > 0 ? Colors.green : Colors.orange,
-      ),
+    SnackUtils.show(
+      context,
+      addedCount > 0
+          ? 'Đã thêm $addedCount công việc vào ghi chú!'
+          : 'Các gợi ý này đã có trong ghi chú rồi.',
+      success: addedCount > 0,
     );
     Navigator.pop(context);
   }
@@ -815,14 +809,14 @@ class _AIChatNoteScreenState extends State<AIChatNoteScreen> {
   // Actions
   // -------------------------------------------------------------------------
 
+  void _showSnack(String message, {bool success = true}) {
+    if (!mounted) return;
+    SnackUtils.show(context, message, success: success);
+  }
+
   void _copyMessage(String text) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Đã sao chép tin nhắn'),
-        duration: Duration(seconds: 1),
-      ),
-    );
+    _showSnack('Đã sao chép tin nhắn');
   }
 
   Future<void> _confirmDeleteSession() async {

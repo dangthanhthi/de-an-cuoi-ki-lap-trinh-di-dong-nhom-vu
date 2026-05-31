@@ -14,9 +14,13 @@ import '../models/app_models.dart';
 import '../controllers/app_state.dart';
 import '../utils/media_utils.dart';
 import 'create_edit_note_screen.dart';
+import 'image_grid_preview_screen.dart';
 import '../utils/note_utils.dart';
+import '../utils/snack_utils.dart';
 import '../widgets/success_animation.dart';
 import '../widgets/common/multi_image_gallery.dart';
+import 'package:easy_image_viewer/easy_image_viewer.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 
 class NoteDetailScreen extends StatefulWidget {
   final Note note;
@@ -26,12 +30,14 @@ class NoteDetailScreen extends StatefulWidget {
 }
 
 class _NoteDetailScreenState extends State<NoteDetailScreen> {
+  Note? _liveNote;
+  Note get note => _liveNote ?? widget.note;
   bool _canManageGroupTodos = true;
 
   @override
   void initState() {
     super.initState();
-    if (widget.note.groupId.isNotEmpty) {
+    if (note.groupId.isNotEmpty) {
       _canManageGroupTodos = false;
     }
     _loadGroupTodoPermission();
@@ -40,25 +46,19 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   void _showSnack(String msg, {bool success = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: success ? Colors.green : Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    SnackUtils.show(context, msg, success: success);
   }
 
   void _markAsReadIfNeeded() {
-    if (widget.note.isUnread) {
-      FirebaseService.markNoteAsViewed(widget.note.id);
+    if (note.isUnread) {
+      FirebaseService.markNoteAsViewed(note.id);
     }
   }
 
   Future<void> _loadGroupTodoPermission() async {
-    if (widget.note.groupId.isEmpty) return;
+    if (note.groupId.isEmpty) return;
     final canManage = await FirebaseService.canCurrentUserManageGroupTasks(
-      widget.note.groupId,
+      note.groupId,
     );
     if (!mounted) return;
     setState(() => _canManageGroupTodos = canManage);
@@ -97,14 +97,72 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
     }
   }
 
+  void _showImagePreview(List<String> imagesOnly, int initialIndex) {
+    if (imagesOnly.length > 1) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageGridPreviewScreen(
+            images: imagesOnly,
+            initialIndex: initialIndex,
+          ),
+        ),
+      );
+      return;
+    }
+    final List<ImageProvider> providers = [];
+    for (final value in imagesOnly) {
+      final bytes = bytesFromDataUri(value);
+      if (bytes != null) {
+        providers.add(MemoryImage(bytes));
+      } else {
+        providers.add(CachedNetworkImageProvider(value));
+      }
+    }
+    if (providers.isEmpty) return;
+
+    showImageViewerPager(
+      context,
+      MultiImageProvider(providers, initialIndex: initialIndex),
+      swipeDismissible: true,
+      doubleTapZoomable: true,
+    );
+  }
+
   void _deleteNote() async {
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool hasUnfinishedTasks = false;
+    if (note.isTodo) {
+      if (note.groupId.isEmpty) {
+        hasUnfinishedTasks = note.todos.any((t) => !t.isDone && t.status != TodoStatus.done);
+      } else {
+        hasUnfinishedTasks = note.todos.any((t) =>
+            t.assigneeEmail.toLowerCase().trim() == myEmail &&
+            !t.isDone &&
+            t.status != TodoStatus.done);
+      }
+    }
+
+    final String contentText;
+    if (note.groupId.isNotEmpty) {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc của bạn chưa hoàn thành. Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc chắn muốn xóa không?';
+      } else {
+        contentText = 'Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc không?';
+      }
+    } else {
+      if (hasUnfinishedTasks) {
+        contentText = 'Ghi chú này còn công việc chưa hoàn thành. Bạn có chắc chắn muốn xóa ghi chú này không?';
+      } else {
+        contentText = 'Bạn có chắc muốn xóa ghi chú này không?';
+      }
+    }
+
     final shouldDelete = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(widget.note.groupId.isNotEmpty ? 'Xóa vĩnh viễn?' : 'Xóa ghi chú?'),
-        content: Text(widget.note.groupId.isNotEmpty 
-            ? 'Hành động này sẽ xóa ghi chú của CẢ NHÓM. Bạn có chắc không?' 
-            : 'Bạn có chắc muốn xóa ghi chú này không?'),
+        title: Text(note.groupId.isNotEmpty ? 'Xóa vĩnh viễn?' : 'Xóa ghi chú?'),
+        content: Text(contentText),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Hủy')),
           FilledButton(
@@ -122,8 +180,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
     try {
       final result = await FirebaseService.deleteNote(
-        widget.note.id,
-        widget.note.title,
+        note.id,
+        note.title,
       );
       if (result != 'SUCCESS') {
         _showSnack(result, success: false);
@@ -142,7 +200,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
   void _shareNote() {
     NoteUtils.showShareSheet(
       context,
-      widget.note,
+      note,
       onShareSuccess: () {
         if (mounted) setState(() {});
       },
@@ -164,7 +222,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
           : '$dateStr ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
     }
 
-    if (widget.note.groupId.isEmpty) {
+    if (note.groupId.isEmpty) {
       if (todo.deadline == null) return base;
       return '$base (Hạn: $deadlineStr)';
     }
@@ -177,31 +235,31 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   String _noteShareText() {
     final buffer = StringBuffer()
-      ..writeln(widget.note.title)
-      ..writeln('Nhãn: ${widget.note.label}')
-      ..writeln('Ưu tiên: ${NotePriority.label(widget.note.priority)}')
-      ..writeln('Ngày tạo: ${widget.note.date}')
+      ..writeln(note.title)
+      ..writeln('Nhãn: ${note.label}')
+      ..writeln('Ưu tiên: ${NotePriority.label(note.priority)}')
+      ..writeln('Ngày tạo: ${note.date}')
       ..writeln();
 
-    if (widget.note.isTodo) {
-      for (final todo in widget.note.todos) {
+    if (note.isTodo) {
+      for (final todo in note.todos) {
         buffer.writeln(_todoExportText(todo));
       }
     } else {
-      buffer.writeln(widget.note.content);
+      buffer.writeln(note.content);
     }
 
-    if (widget.note.attachments.isNotEmpty) {
+    if (note.attachments.isNotEmpty) {
       buffer
         ..writeln()
-        ..writeln('Tệp đính kèm: ${widget.note.attachments.length}');
+        ..writeln('Tệp đính kèm: ${note.attachments.length}');
     }
     return buffer.toString();
   }
 
   Future<void> _shareText() async {
     await SharePlus.instance.share(
-      ShareParams(text: _noteShareText(), subject: widget.note.title),
+      ShareParams(text: _noteShareText(), subject: note.title),
     );
   }
 
@@ -212,29 +270,29 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         pw.MultiPage(
           build: (context) => [
             pw.Text(
-              widget.note.title,
+              note.title,
               style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold),
             ),
             pw.SizedBox(height: 8),
-            pw.Text('Nhãn: ${widget.note.label}'),
-            pw.Text('Ưu tiên: ${NotePriority.label(widget.note.priority)}'),
-            pw.Text('Ngày tạo: ${widget.note.date}'),
+            pw.Text('Nhãn: ${note.label}'),
+            pw.Text('Ưu tiên: ${NotePriority.label(note.priority)}'),
+            pw.Text('Ngày tạo: ${note.date}'),
             pw.SizedBox(height: 16),
-            if (widget.note.isTodo)
-              ...widget.note.todos.map(
+            if (note.isTodo)
+              ...note.todos.map(
                 (todo) => pw.Padding(
                   padding: const pw.EdgeInsets.only(bottom: 8),
                   child: pw.Text(_todoExportText(todo)),
                 ),
               )
             else
-              pw.Text(widget.note.content),
+              pw.Text(note.content),
           ],
         ),
       );
 
       final dir = await getTemporaryDirectory();
-      final safeTitle = widget.note.title
+      final safeTitle = note.title
           .replaceAll(RegExp(r'[^a-zA-Z0-9_-]+'), '_')
           .replaceAll(RegExp(r'_+'), '_')
           .trim();
@@ -246,8 +304,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
       await SharePlus.instance.share(
         ShareParams(
           files: [XFile(file.path)],
-          text: widget.note.title,
-          subject: widget.note.title,
+          text: note.title,
+          subject: note.title,
         ),
       );
     } catch (e) {
@@ -301,7 +359,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         minChildSize: 0.35,
         builder: (context, scrollController) {
           return StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getNoteHistoryStream(widget.note.id),
+            stream: FirebaseService.getNoteHistoryStream(note.id),
             builder: (context, snapshot) {
               final docs = snapshot.data?.docs ?? [];
               if (docs.isEmpty) {
@@ -388,30 +446,42 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    String myEmail = AppState.currentUserEmail.toLowerCase().trim();
-    bool isSharedWithMe = widget.note.sharedWith.any(
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('notes').doc(widget.note.id).snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.hasData && snapshot.data!.exists) {
+          _liveNote = FirebaseService.noteFromDocument(snapshot.data!);
+        } else {
+          _liveNote = null;
+        }
+        String myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    bool isSharedWithMe = note.sharedWith.any(
       (e) => e.toLowerCase().trim() == myEmail,
     );
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final usesGroupTaskMetadata = widget.note.groupId.isNotEmpty;
-    final creatorEmail = widget.note.createdByEmail.toLowerCase().trim();
+    final usesGroupTaskMetadata = note.groupId.isNotEmpty;
+    final creatorEmail = note.createdByEmail.toLowerCase().trim();
+    final myUid = FirebaseService.currentUid;
     final isAdmin = AppState.currentUserRole.toLowerCase() == 'admin';
     final isOwner = (creatorEmail.isNotEmpty && creatorEmail == myEmail) ||
+        (note.userId.isNotEmpty && note.userId == myUid) ||
         (creatorEmail.isEmpty &&
-            widget.note.groupId.isEmpty &&
-            widget.note.sharedWith.isEmpty);
+            note.groupId.isEmpty &&
+            note.sharedWith.isEmpty);
     
-    final canEditNote =
-        isOwner || isAdmin || usesGroupTaskMetadata;
-    final canDelete =
-        !isSharedWithMe &&
-        (isOwner || isAdmin || (usesGroupTaskMetadata && _canManageGroupTodos));
+    // For group notes, system-wide admin does NOT automatically grant edit/delete/share permissions.
+    // Only group leaders/managers or the note creator can edit/delete/share.
+    final canEditNote = isOwner || 
+        (!usesGroupTaskMetadata && isAdmin) || 
+        (usesGroupTaskMetadata && _canManageGroupTodos);
+        
+    final canDelete = !isSharedWithMe && 
+        (isOwner || (!usesGroupTaskMetadata && isAdmin) || (usesGroupTaskMetadata && _canManageGroupTodos));
     
-    // Chỉ chủ sở hữu (với note cá nhân) hoặc Admin/Quản lý (với note nhóm) mới được chia sẻ
     final canShare = (isOwner && !usesGroupTaskMetadata) || 
-                     (usesGroupTaskMetadata && (isAdmin || _canManageGroupTodos));
-    Color activeColor = widget.note.coverColor;
+                     (usesGroupTaskMetadata && _canManageGroupTodos);
+    Color activeColor = note.coverColor;
     if (isDark) {
       final hsl = HSLColor.fromColor(activeColor);
       activeColor = hsl
@@ -437,7 +507,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
             flexibleSpace: FlexibleSpaceBar(
               background: Center(
                 child: Icon(
-                  widget.note.isTodo ? Icons.check_box : Icons.edit_document,
+                  note.isTodo ? Icons.check_box : Icons.edit_document,
                   size: 80,
                   color: onActive.withValues(alpha: 0.58),
                 ),
@@ -472,7 +542,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                           context,
                           MaterialPageRoute(
                             builder: (context) =>
-                                CreateEditNoteScreen(note: widget.note),
+                                CreateEditNoteScreen(note: note),
                           ),
                         );
                         if (mounted) setState(() {});
@@ -515,7 +585,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Text(
-                          widget.note.label,
+                          note.label,
                           style: TextStyle(
                             color: activeColor,
                             fontWeight: FontWeight.bold,
@@ -523,35 +593,35 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         ),
                       ),
                       Text(
-                        widget.note.date,
+                        note.date,
                         style: TextStyle(color: mutedText),
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    widget.note.title,
+                    note.title,
                     style: TextStyle(
                       fontSize:
-                          (widget.note.titleFontSize.clamp(22.0, 36.0) as num)
+                          (note.titleFontSize.clamp(22.0, 36.0) as num)
                               .toDouble(),
-                      fontWeight: widget.note.titleIsBold
+                      fontWeight: note.titleIsBold
                           ? FontWeight.bold
                           : FontWeight.w600,
-                      fontStyle: widget.note.titleIsItalic
+                      fontStyle: note.titleIsItalic
                           ? FontStyle.italic
                           : FontStyle.normal,
                       decoration: null,
                       color:
-                          widget.note.resolvedTitleColor ??
+                          note.resolvedTitleColor ??
                           (isSharedWithMe
                               ? colorScheme.error
                               : colorScheme.onSurface),
                     ),
                   ),
                   if (isSharedWithMe ||
-                      widget.note.groupId.isNotEmpty ||
-                      widget.note.todos.any(
+                      note.groupId.isNotEmpty ||
+                      note.todos.any(
                         (t) => t.assigneeEmail.toLowerCase().trim() == myEmail,
                       )) ...[
                     const SizedBox(height: 12),
@@ -566,14 +636,14 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                             colorScheme.errorContainer,
                             colorScheme.onErrorContainer,
                           ),
-                        if (widget.note.groupId.isNotEmpty)
+                        if (note.groupId.isNotEmpty)
                           _buildStatusBadge(
                             context,
-                            'Nhóm: ${widget.note.groupName.isNotEmpty ? widget.note.groupName : "Ghi chú nhóm"}',
+                            'Nhóm: ${note.groupName.isNotEmpty ? note.groupName : "Ghi chú nhóm"}',
                             colorScheme.primaryContainer,
                             colorScheme.onPrimaryContainer,
                           ),
-                        if (widget.note.todos.any(
+                        if (note.todos.any(
                           (t) =>
                               t.assigneeEmail.toLowerCase().trim() == myEmail,
                         ))
@@ -586,7 +656,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       ],
                     ),
                   ],
-                  if (widget.note.sharedWith.isNotEmpty || isSharedWithMe) ...[
+                  if (note.sharedWith.isNotEmpty || isSharedWithMe) ...[
                     const SizedBox(height: 12),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -603,8 +673,8 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         Expanded(
                           child: Text(
                             isSharedWithMe
-                                ? 'Được chia sẻ bởi: ${widget.note.createdByEmail}'
-                                : 'Đã chia sẻ với: ${widget.note.sharedWith.join(", ")}',
+                                ? 'Được chia sẻ bởi: ${note.createdByEmail}'
+                                : 'Đã chia sẻ với: ${note.sharedWith.join(", ")}',
                             style: TextStyle(color: mutedText),
                           ),
                         ),
@@ -619,15 +689,15 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       Chip(
                         avatar: const Icon(Icons.flag_outlined, size: 16),
                         label: Text(
-                          'Ưu tiên: ${NotePriority.label(widget.note.priority)}',
+                          'Ưu tiên: ${NotePriority.label(note.priority)}',
                         ),
                       ),
-                      if (widget.note.isPinned)
+                      if (note.isPinned)
                         const Chip(
                           avatar: Icon(Icons.push_pin, size: 16, color: Colors.amber),
                           label: Text('Ghim trong nhóm'),
                         ),
-                      if (widget.note.isPinnedByUser)
+                      if (note.isPinnedByUser)
                         const Chip(
                           avatar: Icon(Icons.push_pin, size: 16),
                           label: Text('Ghim trên Home'),
@@ -635,13 +705,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     ],
                   ),
 
-                  if (widget.note.isTodo && widget.note.todos.isNotEmpty) ...[
+                  if (note.isTodo && note.todos.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
                           child: AnimatedProgressBar(
-                            value: widget.note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / widget.note.todos.length,
+                            value: note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / note.todos.length,
                             backgroundColor: colorScheme.surfaceContainerHighest,
                             color: activeColor,
                             height: 10,
@@ -649,7 +719,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         ),
                         const SizedBox(width: 12),
                         Text(
-                          '${(widget.note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / widget.note.todos.length * 100).toInt()}%',
+                          '${(note.todos.where((t) => t.isDone || t.status == TodoStatus.done).length / note.todos.length * 100).toInt()}%',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             color: activeColor,
@@ -662,7 +732,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                   const Divider(height: 40),
 
                   // Hiển thị tệp đính kèm.
-                  if (widget.note.attachments.any((a) => isImageValue(a))) ...[
+                  if (note.attachments.any((a) => isImageValue(a))) ...[
                     Text(
                       'Hình ảnh đính kèm:',
                       style: TextStyle(
@@ -672,18 +742,17 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     ),
                     const SizedBox(height: 8),
                     MultiImageGallery(
-                      images: widget.note.attachments.where((a) => isImageValue(a)).toList(),
+                      images: note.attachments.where((a) => isImageValue(a)).toList(),
                       onTapImage: (index) {
-                        final imagesOnly = widget.note.attachments.where((a) => isImageValue(a)).toList();
-                        final originalIndex = widget.note.attachments.indexOf(imagesOnly[index]);
-                        _openAttachment(imagesOnly[index], originalIndex);
+                        final imagesOnly = note.attachments.where((a) => isImageValue(a)).toList();
+                        _showImagePreview(imagesOnly, index);
                       },
                       maxWidth: MediaQuery.of(context).size.width * 0.75,
                     ),
                     const SizedBox(height: 8),
                   ],
 
-                  if (widget.note.attachments.any((a) => !isImageValue(a))) ...[
+                  if (note.attachments.any((a) => !isImageValue(a))) ...[
                     Text(
                       'Tệp đính kèm:',
                       style: TextStyle(
@@ -696,27 +765,27 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        for (var a in widget.note.attachments.where((a) => !isImageValue(a)))
+                        for (var a in note.attachments.where((a) => !isImageValue(a)))
                           ActionChip(
                             avatar: const Icon(
                               Icons.attach_file,
                               size: 16,
                             ),
                             label: Text(
-                              attachmentLabel(a, widget.note.attachments.indexOf(a)),
+                              attachmentLabel(a, note.attachments.indexOf(a)),
                               style: const TextStyle(fontSize: 12),
                             ),
                             backgroundColor: colorScheme.surfaceContainerHighest
                                 .withValues(alpha: isDark ? 0.58 : 1),
                             onPressed: () =>
-                                _openAttachment(a, widget.note.attachments.indexOf(a)),
+                                _openAttachment(a, note.attachments.indexOf(a)),
                           ),
                       ],
                     ),
                     const SizedBox(height: 16),
                   ],
 
-                  if (widget.note.isTodo) ...[
+                  if (note.isTodo) ...[
                     if (usesGroupTaskMetadata && !_canManageGroupTodos) ...[
                       Container(
                         width: double.infinity,
@@ -743,7 +812,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                         ),
                       ),
                     ],
-                    ...widget.note.todos.asMap().entries.map((entry) {
+                    ...note.todos.asMap().entries.map((entry) {
                       final index = entry.key;
                       final todo = entry.value;
                       final isDone =
@@ -766,7 +835,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                                 final nextStatus =
                                     isDone ? TodoStatus.todo : TodoStatus.done;
                                 final res = await FirebaseService.updateTodoStatus(
-                                  widget.note.id,
+                                  note.id,
                                   index,
                                   nextStatus,
                                 );
@@ -776,7 +845,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                                 }
                                 if (!mounted) return;
                                 setState(() {
-                                  widget.note.todos[index] = todo.copyWith(
+                                  note.todos[index] = todo.copyWith(
                                     status: nextStatus,
                                     isDone: nextStatus == TodoStatus.done,
                                     markCompletedNow:
@@ -923,8 +992,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                                               style:
                                                   const TextStyle(fontSize: 10),
                                             ),
-                                            onPressed: () =>
-                                                _openAttachment(url, attIndex),
+                                            onPressed: () {
+                                              if (isImageValue(url)) {
+                                                _showImagePreview([url], 0);
+                                              } else {
+                                                _openAttachment(url, attIndex);
+                                              }
+                                            },
                                             visualDensity:
                                                 VisualDensity.compact,
                                             padding: EdgeInsets.zero,
@@ -942,17 +1016,17 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
                     );
                   }),
                   ] else
-                    widget.note.isRichText
+                    note.isRichText
                         ? _buildRichTextContent()
                         : Text(
-                            widget.note.content,
+                            note.content,
                             style: TextStyle(
-                              fontSize: widget.note.contentFontSize,
+                              fontSize: note.contentFontSize,
                               height: 1.6,
-                              fontWeight: widget.note.contentIsBold ? FontWeight.bold : FontWeight.normal,
-                              fontStyle: widget.note.contentIsItalic ? FontStyle.italic : FontStyle.normal,
-                              decoration: widget.note.contentIsUnderlined ? TextDecoration.underline : null,
-                              color: widget.note.resolvedContentColor ?? colorScheme.onSurface,
+                              fontWeight: note.contentIsBold ? FontWeight.bold : FontWeight.normal,
+                              fontStyle: note.contentIsItalic ? FontStyle.italic : FontStyle.normal,
+                              decoration: note.contentIsUnderlined ? TextDecoration.underline : null,
+                              color: note.resolvedContentColor ?? colorScheme.onSurface,
                             ),
                           ),
 
@@ -964,11 +1038,13 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         ],
       ),
     );
+      },
+    );
   }
 
   Widget _buildRichTextContent() {
     try {
-      final doc = Document.fromJson(jsonDecode(widget.note.content));
+      final doc = Document.fromJson(jsonDecode(note.content));
       final controller = QuillController(
         document: doc,
         selection: const TextSelection.collapsed(offset: 0),
@@ -982,7 +1058,7 @@ class _NoteDetailScreenState extends State<NoteDetailScreen> {
         ),
       );
     } catch (e) {
-      return Text(widget.note.content);
+      return Text(note.content);
     }
   }
 

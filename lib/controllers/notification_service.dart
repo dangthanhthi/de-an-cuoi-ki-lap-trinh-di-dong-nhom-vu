@@ -4,6 +4,12 @@ import 'package:timezone/timezone.dart' as tz;
 
 import 'app_state.dart';
 import '../models/app_models.dart';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import '../views/note_detail_screen.dart';
+import '../views/chat_screen.dart';
+import '../views/group_notes_screen.dart';
+import '../views/requests_screen.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _notificationsPlugin =
@@ -35,7 +41,105 @@ class NotificationService {
       iOS: iosInitSettings,
     );
 
-    await _notificationsPlugin.initialize(initSettings);
+    await _notificationsPlugin.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) async {
+        final payload = response.payload;
+        if (payload == null) return;
+
+        if (payload.startsWith('note:')) {
+          final noteId = payload.substring(5);
+          try {
+            final doc = await FirebaseFirestore.instance
+                .collection('notes')
+                .doc(noteId)
+                .get();
+            if (doc.exists) {
+              final note = FirebaseService.noteFromDocument(doc);
+              final context = AppState.navigatorKey.currentContext;
+              if (context != null && context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => NoteDetailScreen(note: note),
+                  ),
+                );
+              }
+            }
+          } catch (e) {
+            debugPrint('Error navigating to note: $e');
+          }
+        } else if (payload.startsWith('chat:')) {
+          final friendEmail = payload.substring(5);
+          try {
+            final userQuery = await FirebaseFirestore.instance
+                .collection('users')
+                .where('email', isEqualTo: friendEmail)
+                .limit(1)
+                .get();
+            if (userQuery.docs.isNotEmpty) {
+              final userData = userQuery.docs.first.data();
+              final name = userData['name'] ?? friendEmail;
+              final avatar = userData['avatar'] ?? '';
+              final context = AppState.navigatorKey.currentContext;
+              if (context != null && context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ChatScreen(
+                      friendName: name.toString(),
+                      friendEmail: friendEmail,
+                      friendAvatar: avatar.toString(),
+                    ),
+                  ),
+                );
+              }
+            }
+          } catch (e) {
+            debugPrint('Error navigating to chat: $e');
+          }
+        } else if (payload.startsWith('group:')) {
+          final groupId = payload.substring(6);
+          try {
+            final doc = await FirebaseFirestore.instance
+                .collection('groups')
+                .doc(groupId)
+                .get();
+            if (doc.exists) {
+              final groupName = doc.data()?['name'] ?? 'Nhóm';
+              final context = AppState.navigatorKey.currentContext;
+              if (context != null && context.mounted) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => GroupNotesScreen(
+                      groupId: groupId,
+                      groupName: groupName.toString(),
+                    ),
+                  ),
+                );
+              }
+            }
+          } catch (e) {
+            debugPrint('Error navigating to group: $e');
+          }
+        } else if (payload == 'requests') {
+          final context = AppState.navigatorKey.currentContext;
+          if (context != null && context.mounted) {
+            try {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const RequestsScreen(),
+                ),
+              );
+            } catch (e) {
+              debugPrint('Error navigating to requests: $e');
+            }
+          }
+        }
+      },
+    );
     await _notificationsPlugin
         .resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin
@@ -84,7 +188,9 @@ class NotificationService {
 
   static Future<void> cancelNoteReminder(String noteId) async {
     if (noteId.trim().isEmpty) return;
-    await cancel(reminderIdForNote(noteId));
+    final id = reminderIdForNote(noteId);
+    await cancel(id);
+    await cancel(id + 1); // Hủy thông báo công việc chưa hoàn thành (nếu có)
   }
 
   static Future<void> syncNoteReminder({
@@ -92,17 +198,51 @@ class NotificationService {
     required String title,
     required String body,
     DateTime? scheduledTime,
+    List<TodoItem>? todos,
   }) async {
     if (noteId.trim().isEmpty) return;
     final id = reminderIdForNote(noteId);
+    final incompleteId = id + 1;
+
     await cancel(id);
+    await cancel(incompleteId);
+
     if (scheduledTime == null) return;
+
+    // 1. Lên lịch nhắc nhở chính
     await scheduleNotification(
       id: id,
       title: title,
       body: body,
       scheduledTime: scheduledTime,
     );
+
+    // 2. Lên lịch thông báo lúc 00:00 AM của ngày nhắc nhở nếu có công việc chưa hoàn thành
+    if (todos != null && todos.isNotEmpty) {
+      final incompleteTasks = todos
+          .where((todo) => !todo.isDone && todo.task.trim().isNotEmpty)
+          .toList();
+      if (incompleteTasks.isNotEmpty) {
+        final midnight = DateTime(
+          scheduledTime.year,
+          scheduledTime.month,
+          scheduledTime.day,
+          0,
+          0,
+          0,
+        );
+        // Chỉ lên lịch nếu mốc 00:00 AM nằm ở tương lai và trước thời điểm nhắc nhở chính
+        if (midnight.isAfter(DateTime.now()) && midnight.isBefore(scheduledTime)) {
+          final tasksStr = incompleteTasks.map((t) => '• ${t.task}').join('\n');
+          await scheduleNotification(
+            id: incompleteId,
+            title: "Công việc chưa hoàn thành trong ngày: ${title.replaceFirst('Nhắc nhở: ', '').replaceFirst('SNote nhắc nhở: ', '')}",
+            body: "Bạn có ${incompleteTasks.length} việc chưa làm hôm nay:\n$tasksStr",
+            scheduledTime: midnight,
+          );
+        }
+      }
+    }
   }
 
   static Future<void> scheduleNoteReminder(String noteId, Note note) async {
@@ -111,6 +251,7 @@ class NotificationService {
       title: "Nhắc nhở: ${note.title}",
       body: note.content.isEmpty ? "Đến giờ ghi chú rồi!" : note.content,
       scheduledTime: note.reminderTime,
+      todos: note.todos,
     );
   }
 
@@ -118,6 +259,7 @@ class NotificationService {
     required int id,
     required String title,
     required String body,
+    String? payload,
   }) async {
     if (!AppState.notificationsEnabledNotifier.value) return;
     await _notificationsPlugin.show(
@@ -134,6 +276,7 @@ class NotificationService {
           icon: '@mipmap/ic_launcher',
         ),
       ),
+      payload: payload,
     );
   }
 

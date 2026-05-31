@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import '../models/app_models.dart';
 
 import 'app_state.dart';
+import 'services/groq_client.dart';
 
 class AiMessage {
   final String id;
@@ -125,23 +128,103 @@ class AIService {
     required String title,
     required String content,
   }) async {
+    // 1. Thử gọi Groq AI nếu được cấu hình
+    if (GroqClient.isConfigured) {
+      try {
+        final now = DateTime.now();
+        final weekdayNames = [
+          'Thứ Hai',
+          'Thứ Ba',
+          'Thứ Tư',
+          'Thứ Năm',
+          'Thứ Sáu',
+          'Thứ Bảy',
+          'Chủ Nhật'
+        ];
+        // weekday: 1 (Monday) -> 7 (Sunday)
+        final currentWeekday = weekdayNames[now.weekday - 1];
+
+        final systemPrompt = '''
+Bạn là SNote AI. Nhiệm vụ: phân tích tiêu đề và nội dung ghi chú để tự động đề xuất Nhãn (Label), Độ ưu tiên (Priority) và Nhắc nhở (Reminder).
+
+THỜI GIAN HIỆN TẠI CỦA HỆ THỐNG: $now ($currentWeekday)
+
+QUY TẮC BẮT BUỘC:
+1. Trả về ĐÚNG định dạng JSON object, KHÔNG có bất kỳ ký tự nào ngoài JSON.
+2. Cấu trúc JSON trả về:
+{
+  "label": "Gia đình" | "Công việc" | "Học tập" | "Mua sắm" | "Tài chính" | "Sức khỏe" | "Du lịch" | "Sự kiện" | "Cá nhân",
+  "priority": "none" | "low" | "medium" | "high",
+  "reminder": "YYYY-MM-DD HH:mm:ss" | null
+}
+3. Quy tắc gán Nhãn (label):
+- "Gia đình": Liên quan đến người thân, việc nhà, đi chợ nấu ăn cho cả nhà/gia đình, dọn dẹp nhà cửa.
+- "Mua sắm": Danh sách thực phẩm, đi siêu thị, mua đồ dùng cần thiết, shopping nói chung.
+- "Học tập": Bài tập, đề án, thi cử.
+- "Công việc": Việc cơ quan, họp hành, đối tác.
+- "Du lịch", "Sức khỏe", "Tài chính", "Sự kiện", "Cá nhân": Phân loại tương ứng.
+- Nếu ghi chú vừa liên quan "Gia đình" vừa "Mua sắm" (ví dụ: đi chợ mua đồ ăn cho cả nhà), ưu tiên chọn "Gia đình" vì có chữ "cho cả nhà", "cho gia đình", "trong nhà".
+4. Quy tắc Nhắc nhở (reminder):
+- Trích xuất ngày giờ được đề cập trong văn bản.
+- Quy đổi sang ngày giờ chính xác định dạng "YYYY-MM-DD HH:mm:ss" dựa trên thời gian hệ thống cung cấp ở trên.
+- Ví dụ:
+  + "sáng thứ 7 tuần sau": Thứ Bảy của tuần tiếp theo. Hôm nay là Chủ Nhật 2026-05-31, nên Thứ Bảy tuần này là 2026-06-06, còn Thứ Bảy tuần sau là 2026-06-13. Nếu có giờ cụ thể như "6h sáng", giờ sẽ là 06:00:00.
+  + Nếu không có giờ cụ thể mà chỉ nói "sáng", hãy mặc định là 08:00:00.
+  + Nếu không đề cập thời gian, "reminder" phải là null.
+''';
+
+        final messages = GroqClient.buildMessages(
+          systemPrompt: systemPrompt,
+          userMessage: 'Tiêu đề: "$title"\nNội dung: "$content"',
+        );
+
+        final response = await GroqClient.fastCompletion(
+          messages: messages,
+          temperature: 0.1,
+          maxTokens: 256,
+        );
+
+        final jsonMatch = RegExp(r'\{.*\}', dotAll: true).firstMatch(response);
+        if (jsonMatch != null) {
+          final data = jsonDecode(jsonMatch.group(0)!) as Map<String, dynamic>;
+          final label = data['label']?.toString() ?? 'Cá nhân';
+          final priority = data['priority']?.toString() ?? 'none';
+
+          DateTime? reminder;
+          final reminderStr = data['reminder']?.toString();
+          if (reminderStr != null && reminderStr.isNotEmpty) {
+            reminder = DateTime.tryParse(reminderStr);
+          }
+
+          return {
+            'label': label,
+            'priority': priority,
+            'reminder': reminder,
+          };
+        }
+      } catch (e) {
+        debugPrint('Error analyzing metadata with Groq AI: $e');
+      }
+    }
+
+    // 2. Fallback sang logic cục bộ nếu lỗi hoặc Groq chưa cấu hình
     final combined = "$title\n$content";
     final label = suggestLabel(title, content);
 
     // Phân tích độ ưu tiên
     String priority = NotePriority.none;
-    final lower = combined.toLowerCase();
-    if (lower.contains('gấp') ||
-        lower.contains('quan trọng') ||
-        lower.contains('ngay lập tức') ||
-        lower.contains('khẩn cấp') ||
+    final lower = _normalizeText(combined);
+    if (lower.contains('gap') ||
+        lower.contains('quan trong') ||
+        lower.contains('ngay lap tuc') ||
+        lower.contains('khan cap') ||
         lower.contains('priority') ||
         lower.contains('asap')) {
       priority = NotePriority.high;
-    } else if (lower.contains('cần làm') ||
-        lower.contains('sớm') ||
-        lower.contains('tuần này') ||
-        lower.contains('ra soát')) {
+    } else if (lower.contains('can lam') ||
+        lower.contains('som') ||
+        lower.contains('tuan nay') ||
+        lower.contains('ra soat')) {
       priority = NotePriority.medium;
     }
 
@@ -183,7 +266,6 @@ class AIService {
         }
       } catch (_) {}
     } else if (timeMatch != null) {
-      // Nếu chỉ có giờ, mặc định là hôm nay hoặc mai
       try {
         final hour = int.parse(timeMatch.group(1)!);
         final minute = int.parse(timeMatch.group(2)!);
@@ -293,6 +375,7 @@ class AIService {
       throw const AIServiceException('Tin nhan khong duoc de trong.');
     }
 
+    // Lưu tin nhắn user vào Firestore
     await _messagesRef(sessionId).add(
       AiMessage(
         id: '',
@@ -302,6 +385,7 @@ class AIService {
       ).toFirestore(),
     );
 
+    // Lấy lịch sử hội thoại
     final historySnap = await _messagesRef(
       sessionId,
     ).orderBy('timestamp', descending: true).limit(_maxHistoryMessages).get();
@@ -316,12 +400,23 @@ class AIService {
         .where((message) => message.isUser || message.isAssistant)
         .toList();
 
-    final parsed = _buildAssistantPayload(
-      userMessage: cleanText,
-      noteTitle: noteTitle,
-      noteContent: noteContent,
-      history: historyMessages,
-    );
+    // Thử gọi Groq API trước, fallback về logic cục bộ
+    _ParsedResponse parsed;
+    if (GroqClient.isConfigured) {
+      parsed = await _sendViaGroq(
+        userMessage: cleanText,
+        noteTitle: noteTitle,
+        noteContent: noteContent,
+        history: historyMessages,
+      );
+    } else {
+      parsed = _buildAssistantPayload(
+        userMessage: cleanText,
+        noteTitle: noteTitle,
+        noteContent: noteContent,
+        history: historyMessages,
+      );
+    }
 
     final assistantDocRef = await _messagesRef(sessionId).add(
       AiMessage(
@@ -349,6 +444,86 @@ class AIService {
     );
   }
 
+  /// Gọi Groq API cho chat, fallback nếu lỗi
+  static Future<_ParsedResponse> _sendViaGroq({
+    required String userMessage,
+    String? noteTitle,
+    String? noteContent,
+    List<AiMessage> history = const [],
+  }) async {
+    final title = (noteTitle ?? '').trim();
+    final content = (noteContent ?? '').trim();
+    final fullContext = [title, content, userMessage.trim()]
+        .where((p) => p.isNotEmpty)
+        .join('\n');
+
+    if (_isUnsafeRequest(fullContext)) {
+      return _ParsedResponse(cleanText: _unsafeResponse(), todos: const []);
+    }
+
+    try {
+      // Chọn system prompt phù hợp
+      final systemPrompt = title.isNotEmpty
+          ? GroqClient.chatWithNoteSystemPrompt(title, content)
+          : GroqClient.chatSystemPrompt;
+
+      // Xây dựng lịch sử hội thoại
+      final chatHistory = history
+          .where((m) => m.id != '__welcome__')
+          .map((m) => {'role': m.role, 'content': m.content})
+          .toList();
+
+      final messages = GroqClient.buildMessages(
+        systemPrompt: systemPrompt,
+        userMessage: userMessage,
+        history: chatHistory.isNotEmpty ? chatHistory : null,
+      );
+
+      final response = await GroqClient.chatCompletion(
+        messages: messages,
+        maxTokens: 1024,
+      );
+
+      // Kiểm tra nếu response chứa todo suggestions (JSON array)
+      final todos = _tryParseTodosFromResponse(response);
+
+      return _ParsedResponse(
+        cleanText: todos.isNotEmpty
+            ? 'Mình đã phân tích và tạo danh sách công việc cho bạn.'
+            : response,
+        todos: todos,
+      );
+    } catch (e) {
+      // Fallback về logic cục bộ nếu Groq API lỗi
+      return _buildAssistantPayload(
+        userMessage: userMessage,
+        noteTitle: noteTitle,
+        noteContent: noteContent,
+        history: history,
+      );
+    }
+  }
+
+  /// Thử parse JSON todo array từ phản hồi AI
+  static List<AiTodoSuggestion> _tryParseTodosFromResponse(String response) {
+    try {
+      // Tìm JSON array trong response
+      final jsonMatch = RegExp(r'\[\s*\{.*\}\s*\]', dotAll: true)
+          .firstMatch(response);
+      if (jsonMatch == null) return const [];
+
+      final jsonStr = jsonMatch.group(0)!;
+      final list = jsonDecode(jsonStr) as List;
+      return list
+          .map((item) => AiTodoSuggestion.fromMap(
+                Map<String, dynamic>.from(item as Map),
+              ))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
   static Future<List<AiTodoSuggestion>> suggestTodosFromNote({
     required String noteTitle,
     required String noteContent,
@@ -356,6 +531,28 @@ class AIService {
     if (_isUnsafeRequest('$noteTitle\n$noteContent')) {
       return [];
     }
+
+    // Thử gọi Groq API
+    if (GroqClient.isConfigured) {
+      try {
+        final messages = GroqClient.buildMessages(
+          systemPrompt: GroqClient.todoSystemPrompt,
+          userMessage:
+              'Tiêu đề: "$noteTitle"\nNội dung: "$noteContent"\n\nHãy tạo danh sách todo dạng JSON array.',
+        );
+        final response = await GroqClient.fastCompletion(
+          messages: messages,
+          temperature: 0.4,
+          maxTokens: 768,
+        );
+        final todos = _tryParseTodosFromResponse(response);
+        if (todos.isNotEmpty) return todos;
+      } catch (_) {
+        // Fallback bên dưới
+      }
+    }
+
+    // Fallback: logic cục bộ
     return _buildLocalTodoSuggestions(
       noteTitle: noteTitle,
       noteContent: noteContent,
@@ -367,16 +564,54 @@ class AIService {
     if (_isUnsafeRequest(noteTitle)) {
       return _unsafeResponse();
     }
+
+    // Thử gọi Groq API
+    if (GroqClient.isConfigured) {
+      try {
+        final messages = GroqClient.buildMessages(
+          systemPrompt: GroqClient.suggestContentSystemPrompt,
+          userMessage: 'Tiêu đề ghi chú: "$noteTitle"\n\nHãy gợi ý nội dung chi tiết cho ghi chú này.',
+        );
+        final response = await GroqClient.fastCompletion(
+          messages: messages,
+          temperature: 0.6,
+          maxTokens: 768,
+        );
+        if (response.isNotEmpty) return response;
+      } catch (_) {
+        // Fallback bên dưới
+      }
+    }
+
     return _buildLocalNoteContent(noteTitle);
   }
 
   static Future<String> summarizeNote(String title, String content) async {
     if (content.trim().isEmpty) {
-      return 'Noi dung trong, chua the tom tat.';
+      return 'Nội dung trống, chưa thể tóm tắt.';
     }
     if (_isUnsafeRequest('$title\n$content')) {
       return _unsafeResponse();
     }
+
+    // Thử gọi Groq API
+    if (GroqClient.isConfigured) {
+      try {
+        final messages = GroqClient.buildMessages(
+          systemPrompt: GroqClient.summarySystemPrompt,
+          userMessage: 'Tiêu đề: "$title"\nNội dung:\n$content\n\nHãy tóm tắt ghi chú trên.',
+        );
+        final response = await GroqClient.fastCompletion(
+          messages: messages,
+          temperature: 0.3,
+          maxTokens: 512,
+        );
+        if (response.isNotEmpty) return response;
+      } catch (_) {
+        // Fallback bên dưới
+      }
+    }
+
     return _buildLocalSummary(title, content);
   }
 
@@ -384,6 +619,25 @@ class AIService {
     if (_isUnsafeRequest('$title\n$content')) {
       return _unsafeResponse();
     }
+
+    // Thử gọi Groq API
+    if (GroqClient.isConfigured) {
+      try {
+        final messages = GroqClient.buildMessages(
+          systemPrompt: GroqClient.adviceSystemPrompt,
+          userMessage: 'Tiêu đề: "$title"\nNội dung:\n$content\n\nHãy đưa ra 3-5 lời khuyên chiến lược.',
+        );
+        final response = await GroqClient.chatCompletion(
+          messages: messages,
+          temperature: 0.6,
+          maxTokens: 512,
+        );
+        if (response.isNotEmpty) return response;
+      } catch (_) {
+        // Fallback bên dưới
+      }
+    }
+
     return _buildLocalAdvice(title, content);
   }
 
@@ -1389,7 +1643,10 @@ class AIService {
       'ban sung',
       'danh bom',
     ];
-    return keywords.any(normalized.contains);
+    return keywords.any((keyword) {
+      final regex = RegExp(r'\b' + RegExp.escape(keyword) + r'\b');
+      return regex.hasMatch(normalized);
+    });
   }
 
   static String _unsafeResponse() {

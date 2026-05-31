@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
 import '../models/app_models.dart';
 import '../controllers/app_state.dart';
+import '../utils/note_utils.dart';
 
 enum HomeViewType { list, kanban }
 
@@ -28,6 +30,8 @@ class NoteProvider extends ChangeNotifier {
   List<Note> _notes = [];
   bool _isLoading = false;
   StreamSubscription? _notesSubscription;
+  StreamSubscription<User?>? _authSubscription;
+  int _animationTrigger = 0;
 
 
 
@@ -40,6 +44,12 @@ class NoteProvider extends ChangeNotifier {
   String get viewMode => _viewMode;
   String get sortBy => _sortBy;
   HomeViewType get homeViewType => _homeViewType;
+  int get animationTrigger => _animationTrigger;
+
+  void triggerAnimation() {
+    _animationTrigger++;
+    notifyListeners();
+  }
 
   void setViewType(HomeViewType type) {
     _homeViewType = type;
@@ -52,6 +62,9 @@ class NoteProvider extends ChangeNotifier {
 
   void _init() {
     _loadNotes();
+    _authSubscription = FirebaseAuth.instance.authStateChanges().listen((user) {
+      _loadNotes();
+    });
   }
 
   void _loadNotes() {
@@ -63,7 +76,11 @@ class NoteProvider extends ChangeNotifier {
     // Default to watching ALL my accessible notes
     _notesSubscription = FirebaseService.getAllMyNotesStream().listen((notes) {
       _allNotes = notes;
+      final wasLoading = _isLoading;
       _isLoading = false;
+      if (wasLoading) {
+        _animationTrigger++;
+      }
       refresh();
     }, onError: (e) {
       _isLoading = false;
@@ -190,7 +207,7 @@ class NoteProvider extends ChangeNotifier {
         case 'priority_desc':
           return NotePriority.weight(b.priority).compareTo(NotePriority.weight(a.priority));
         case 'title_asc':
-          return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+          return NoteUtils.removeDiacritics(a.title).compareTo(NoteUtils.removeDiacritics(b.title));
         default:
           return 0;
       }
@@ -200,9 +217,15 @@ class NoteProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> dismissOverdueTodo(String key) async {
+    await AppState.dismissOverdueTodo(key);
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     _notesSubscription?.cancel();
+    _authSubscription?.cancel();
     super.dispose();
   }
 }

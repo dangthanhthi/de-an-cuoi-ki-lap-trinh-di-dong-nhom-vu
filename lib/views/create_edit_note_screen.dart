@@ -9,12 +9,19 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:easy_image_viewer/easy_image_viewer.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import 'image_grid_preview_screen.dart';
 import '../controllers/app_state.dart';
 import '../controllers/notification_service.dart';
 import '../controllers/ai_service.dart';
 import '../models/app_models.dart';
 import '../utils/media_utils.dart';
+import '../utils/snack_utils.dart';
 // Removed AIChatNoteScreen import
 
 class CreateEditNoteScreen extends StatefulWidget {
@@ -46,6 +53,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   bool _hasReminder = false;
   DateTime? _selectedReminderTime;
   List<String> _attachments = [];
+  final List<Map<String, dynamic>> _uploadingAttachments = [];
   bool _isUploading = false;
   bool _isListening = false;
   bool _isPinned = false;
@@ -142,21 +150,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   }
 
   void _showSnack(String message, {bool success = true}) {
-    if (!mounted) return;
-    final colorScheme = Theme.of(context).colorScheme;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          message,
-          style: TextStyle(
-            color: success ? colorScheme.onTertiary : colorScheme.onError,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        backgroundColor: success ? colorScheme.tertiary : colorScheme.error,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    SnackUtils.show(context, message, success: success);
   }
 
   Future<bool?> _showConfirmDialog({
@@ -291,10 +285,16 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
 
   bool get _isLimitedEditor {
     if (_activeGroupId.isEmpty) return false;
-    if (_canManageGroupTasks || isAdmin) return false;
 
-    // Nếu là tạo mới ghi chú trong nhóm, cho phép chỉnh sửa ban đầu
-    if (widget.note == null) return false;
+    final myEmail = AppState.currentUserEmail.toLowerCase().trim();
+    final myUid = FirebaseService.currentUid;
+    final creatorEmail = widget.note?.createdByEmail.toLowerCase().trim() ?? '';
+    final isOwner = creatorEmail == myEmail ||
+                    (widget.note?.userId.isNotEmpty == true && widget.note?.userId == myUid) ||
+                    (widget.note == null);
+
+    if (isOwner) return false;
+    if (_canManageGroupTasks) return false;
 
     return true;
   }
@@ -303,20 +303,26 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     return _isLimitedEditor;
   }
 
-  bool _canModifyTodo(int index) {
+  bool _canEditTodoDefinition(int index) {
+    if (widget.note == null) return true;
     if (isAdmin || _canManageGroupTasks) return true;
-    if (index < 0 || index >= _todos.length) return false;
-
-    // Nếu là ghi chú cá nhân
     if (_activeGroupId.isEmpty) return true;
+    return false;
+  }
+
+  bool _canUpdateTodoStatusAndAttachments(int index) {
+    if (widget.note == null) return true;
+    if (isAdmin || _canManageGroupTasks) return true;
+    if (_activeGroupId.isEmpty) return true;
+    if (index < 0 || index >= _todos.length) return false;
 
     final todo = _todos[index];
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final isAssignee = todo.assigneeEmail.toLowerCase().trim() == myEmail;
-    final isUnassigned = todo.assigneeEmail.trim().isEmpty;
 
-    return isAssignee || isUnassigned;
+    return isAssignee;
   }
+
 
   Future<void> _loadGroupMembers() async {
     final groupId = _activeGroupId;
@@ -519,6 +525,10 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   }
 
   Future<void> _saveNote() async {
+    if (_uploadingAttachments.isNotEmpty) {
+      _showSnack('Vui lòng đợi các tệp tải lên hoàn tất trước khi lưu.', success: false);
+      return;
+    }
     final title = _titleController.text.trim();
     final content = _contentController.text.trim();
     final inferredLabel = (!_hasUserChangedLabel && widget.note == null)
@@ -638,6 +648,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         title: 'SNote nhắc nhở: $title',
         body: content.isNotEmpty ? content : 'Đến giờ thực hiện công việc rồi!',
         scheduledTime: _hasReminder ? _selectedReminderTime : null,
+        todos: _todos,
       );
 
       if (mounted) navigator.pop();
@@ -773,8 +784,6 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     ImageSource source, {
     int? todoIndex,
   }) async {
-    if (_isUploading) return;
-
     if (source == ImageSource.camera) {
       final cameraStatus = await Permission.camera.request();
       if (!cameraStatus.isGranted) {
@@ -790,17 +799,21 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
 
     final picker = ImagePicker();
     if (source == ImageSource.gallery) {
-      final images = await picker.pickMultiImage(
+      var images = await picker.pickMultiImage(
         imageQuality: 30,
         maxWidth: 512,
       );
       if (images.isNotEmpty) {
+        if (images.length > 15) {
+          _showSnack('Chỉ được chọn tối đa 15 ảnh mỗi lần. Đã lấy 15 ảnh đầu tiên.', success: false);
+          images = images.sublist(0, 15);
+        }
         for (final img in images) {
           final file = File(img.path);
           final fileSize = await file.length();
           if (fileSize <= FirebaseService.maxAttachmentBytes) {
             final name = img.name.isNotEmpty ? img.name : 'image.jpg';
-            await _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
+            _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
           } else {
             _showSnack('Ảnh ${img.name} quá lớn (>30MB).', success: false);
           }
@@ -822,13 +835,11 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       }
 
       final name = image.name.isNotEmpty ? image.name : 'image.jpg';
-      await _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
+      _uploadAttachmentFile(file, name, fileSize, todoIndex: todoIndex);
     }
   }
 
   Future<void> _pickFileAttachment() async {
-    if (_isUploading) return;
-
     try {
       if (Platform.isAndroid) {
         final storageStatus = await Permission.storage.request();
@@ -862,7 +873,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
           continue;
         }
 
-        await _uploadAttachmentFile(selectedFile, file.name, size);
+        _uploadAttachmentFile(selectedFile, file.name, size);
       }
     } catch (e) {
       _showSnack('Lỗi chọn tệp: $e', success: false);
@@ -870,8 +881,6 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   }
 
   Future<void> _pickTodoFile(int index) async {
-    if (_isUploading) return;
-
     try {
       final result = await FilePicker.pickFiles(withData: false, allowMultiple: true);
       if (result == null || result.files.isEmpty) return;
@@ -901,7 +910,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
           continue;
         }
 
-        await _uploadAttachmentFile(
+        _uploadAttachmentFile(
           selectedFile,
           file.name,
           size,
@@ -926,7 +935,18 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       );
       return;
     }
-    setState(() => _isUploading = true);
+
+    final uploadId = '${DateTime.now().millisecondsSinceEpoch}_$fileName';
+    final uploadItem = {
+      'id': uploadId,
+      'name': fileName,
+      'todoIndex': todoIndex,
+    };
+
+    setState(() {
+      _uploadingAttachments.add(uploadItem);
+    });
+
     try {
       final url = await FirebaseService.uploadAttachmentFile(
         file,
@@ -934,21 +954,96 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
         fileSize: fileSize,
       );
       if (!mounted) return;
+
+      bool wasCancelled = true;
       setState(() {
-        if (todoIndex != null) {
-          _todos[todoIndex].attachments.add(url);
-        } else {
-          _attachments.add(url);
+        wasCancelled = !_uploadingAttachments.any((item) => item['id'] == uploadId);
+        _uploadingAttachments.removeWhere((item) => item['id'] == uploadId);
+        if (!wasCancelled) {
+          if (todoIndex != null) {
+            if (todoIndex >= 0 && todoIndex < _todos.length) {
+              _todos[todoIndex].attachments.add(url);
+            }
+          } else {
+            _attachments.add(url);
+          }
         }
       });
-      _showSnack('Đã đính kèm tệp.');
+      if (!wasCancelled) {
+        _showSnack('Đã đính kèm tệp.');
+      }
     } on FirebaseException catch (e) {
-      _showSnack('Lỗi Storage (${e.code}): ${e.message}', success: false);
+      if (mounted) {
+        setState(() {
+          _uploadingAttachments.removeWhere((item) => item['id'] == uploadId);
+        });
+        _showSnack('Lỗi Storage (${e.code}): ${e.message}', success: false);
+      }
     } catch (e) {
-      _showSnack('Lỗi đính kèm: $e', success: false);
-    } finally {
-      if (mounted) setState(() => _isUploading = false);
+      if (mounted) {
+        setState(() {
+          _uploadingAttachments.removeWhere((item) => item['id'] == uploadId);
+        });
+        _showSnack('Lỗi đính kèm: $e', success: false);
+      }
     }
+  }
+
+  Future<void> _openAttachment(String value, int index) async {
+    try {
+      final bytes = bytesFromDataUri(value);
+      if (bytes != null) {
+        final fileName = sanitizeFileName(
+          fileNameFromDataUri(value, fallback: 'tep-${index + 1}'),
+          fallback: 'tep-${index + 1}',
+        );
+        final dir = await getTemporaryDirectory();
+        final file = File('${dir.path}/$fileName');
+        await file.writeAsBytes(bytes, flush: true);
+        await OpenFilex.open(file.path);
+        return;
+      }
+      final uri = Uri.tryParse(value);
+      if (uri != null && await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnack('Không mở được tệp', success: false);
+      }
+    } catch (e) {
+      _showSnack('Lỗi mở tệp: $e', success: false);
+    }
+  }
+
+  void _showImagePreview(List<String> imagesOnly, int initialIndex) {
+    if (imagesOnly.length > 1) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ImageGridPreviewScreen(
+            images: imagesOnly,
+            initialIndex: initialIndex,
+          ),
+        ),
+      );
+      return;
+    }
+    final List<ImageProvider> providers = [];
+    for (final value in imagesOnly) {
+      final bytes = bytesFromDataUri(value);
+      if (bytes != null) {
+        providers.add(MemoryImage(bytes));
+      } else {
+        providers.add(CachedNetworkImageProvider(value));
+      }
+    }
+    if (providers.isEmpty) return;
+
+    showImageViewerPager(
+      context,
+      MultiImageProvider(providers, initialIndex: initialIndex),
+      swipeDismissible: true,
+      doubleTapZoomable: true,
+    );
   }
 
   Widget _buildGroupContextCard(ColorScheme colorScheme) {
@@ -1137,35 +1232,72 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
       backgroundColor: subtleFill,
       side: BorderSide.none,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      onPressed: () {
-        if (_hasReminder) {
-          setState(() {
-            _hasReminder = false;
-            _selectedReminderTime = null;
-          });
-        } else {
-          _pickReminderTime();
-        }
-      },
+      onPressed: _isLimitedEditor
+          ? null
+          : () {
+              if (_hasReminder) {
+                setState(() {
+                  _hasReminder = false;
+                  _selectedReminderTime = null;
+                });
+              } else {
+                _pickReminderTime();
+              }
+            },
     );
   }
 
   Widget _buildAttachmentChips() {
-    if (_attachments.isEmpty) return const SizedBox();
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: _attachments.asMap().entries.map((entry) {
-        final index = entry.key;
-        final path = entry.value;
-        final name = attachmentLabel(path, index);
-        return Chip(
-          label: Text(name, style: const TextStyle(fontSize: 12)),
-          onDeleted: () => setState(() => _attachments.remove(path)),
-          deleteIcon: const Icon(Icons.close, size: 14),
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-        );
-      }).toList(),
+    final noteUploading = _uploadingAttachments.where((item) => item['todoIndex'] == null).toList();
+    if (_attachments.isEmpty && noteUploading.isEmpty) return const SizedBox.shrink();
+    return Container(
+      height: 48,
+      margin: const EdgeInsets.only(bottom: 8),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            for (var i = 0; i < _attachments.length; i++) ...[
+              InputChip(
+                label: Text(attachmentLabel(_attachments[i], i), style: const TextStyle(fontSize: 12)),
+                onDeleted: () => setState(() => _attachments.removeAt(i)),
+                deleteIcon: const Icon(Icons.close, size: 14),
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                onPressed: () {
+                  if (isImageValue(_attachments[i])) {
+                    _showImagePreview([_attachments[i]], 0);
+                  } else {
+                    _openAttachment(_attachments[i], i);
+                  }
+                },
+              ),
+              const SizedBox(width: 8),
+            ],
+            for (var item in noteUploading) ...[
+              Chip(
+                avatar: const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 1.5),
+                ),
+                label: Text(
+                  item['name'] as String,
+                  style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                ),
+                onDeleted: () {
+                  setState(() {
+                    _uploadingAttachments.removeWhere((x) => x['id'] == item['id']);
+                  });
+                },
+                deleteIcon: const Icon(Icons.close, size: 14),
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -1320,11 +1452,12 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               ],
             ),
           ],
-          IconButton(
-            icon: const Icon(Icons.check),
-            tooltip: 'Lưu',
-            onPressed: _saveNote,
-          ),
+          if (!_isLimitedEditor)
+            IconButton(
+              icon: const Icon(Icons.check),
+              tooltip: 'Lưu',
+              onPressed: _saveNote,
+            ),
         ],
       ),
       body: SafeArea(
@@ -1562,14 +1695,14 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     IconButton(
                       icon: const Icon(Icons.image_outlined),
                       tooltip: 'Thêm ảnh',
-                      onPressed: _isUploading
+                      onPressed: (_isUploading || _isLimitedEditor)
                           ? null
                           : () => _showImageSourceSheet(),
                     ),
                     IconButton(
                       icon: const Icon(Icons.attach_file_rounded),
                       tooltip: 'Đính kèm tệp',
-                      onPressed: _isUploading
+                      onPressed: (_isUploading || _isLimitedEditor)
                           ? null
                           : () => _pickFileAttachment(),
                     ),
@@ -1762,8 +1895,10 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     Color mutedText,
   ) {
     final isDone = _todos[index].isDone;
+    final hasUpdatePerm = _canUpdateTodoStatusAndAttachments(index);
+    final hasEditPerm = _canEditTodoDefinition(index);
     return Opacity(
-      opacity: _canModifyTodo(index) ? 1.0 : 0.5,
+      opacity: (hasUpdatePerm || hasEditPerm) ? 1.0 : 0.5,
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -1776,7 +1911,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 Checkbox(
                   value: isDone,
                   activeColor: colorScheme.primary,
-                  onChanged: !_canModifyTodo(index)
+                  onChanged: !hasUpdatePerm
                       ? null
                       : (val) {
                           final newVal = val ?? false;
@@ -1801,7 +1936,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                   child: TextFormField(
                     key: ValueKey('todo_simple_$index'),
                     initialValue: _todos[index].task,
-                    enabled: _canModifyTodo(index),
+                    enabled: hasEditPerm,
                     maxLines: null,
                     onChanged: (val) => _todos[index].task = val,
                     style: TextStyle(
@@ -1843,7 +1978,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     color: colorScheme.primary.withValues(alpha: 0.7),
                     size: 20,
                   ),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasEditPerm
                       ? null
                       : () => _showTodoFormattingSheet(index),
                   visualDensity: VisualDensity.compact,
@@ -1851,7 +1986,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 ),
                 IconButton(
                   icon: Icon(Icons.close_rounded, color: mutedText, size: 20),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasEditPerm
                       ? null
                       : () async {
                           final confirm = await _showConfirmDialog(
@@ -1878,8 +2013,11 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     ColorScheme colorScheme,
     Color mutedText,
   ) {
+    final hasEditPerm = _canEditTodoDefinition(index);
+    final hasUpdatePerm = _canUpdateTodoStatusAndAttachments(index);
+
     return Opacity(
-      opacity: _canModifyTodo(index) ? 1.0 : 0.5,
+      opacity: (hasEditPerm || hasUpdatePerm) ? 1.0 : 0.5,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         padding: const EdgeInsets.all(10),
@@ -1898,7 +2036,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               children: [
                 Checkbox(
                   value: _todos[index].isDone,
-                  onChanged: !_canModifyTodo(index)
+                  onChanged: !hasUpdatePerm
                       ? null
                       : (val) {
                           HapticFeedback.lightImpact();
@@ -1925,7 +2063,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                   child: TextFormField(
                     key: ValueKey('todo_$index'),
                     initialValue: _todos[index].task,
-                    enabled: _canModifyTodo(index),
+                    enabled: hasEditPerm,
                     maxLines: null, // Auto-expand
                     onChanged: (val) => _todos[index].task = val,
                     style: TextStyle(
@@ -1971,7 +2109,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                     color: colorScheme.primary.withValues(alpha: 0.7),
                     size: 20,
                   ),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasEditPerm
                       ? null
                       : () => _showTodoFormattingSheet(index),
                   visualDensity: VisualDensity.compact,
@@ -1979,7 +2117,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 ),
                 IconButton(
                   icon: Icon(Icons.close_rounded, color: mutedText, size: 20),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasEditPerm
                       ? null
                       : () async {
                           final confirm = await _showConfirmDialog(
@@ -2022,7 +2160,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 OutlinedButton.icon(
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasEditPerm
                       ? null
                       : () => _pickTodoDeadline(index),
                   icon: const Icon(Icons.event_outlined, size: 18),
@@ -2042,7 +2180,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                 if (_todos[index].deadline != null)
                   IconButton(
                     tooltip: 'Xóa deadline',
-                    onPressed: !_canModifyTodo(index)
+                    onPressed: !hasEditPerm
                         ? null
                         : () {
                             setState(() {
@@ -2056,21 +2194,21 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
                   ),
                 IconButton(
                   icon: const Icon(Icons.image_outlined, size: 20),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasUpdatePerm
                       ? null
                       : () => _showImageSourceSheet(todoIndex: index),
                   tooltip: 'Thêm ảnh cho task',
                 ),
                 IconButton(
                   icon: const Icon(Icons.attach_file_rounded, size: 20),
-                  onPressed: !_canModifyTodo(index)
+                  onPressed: !hasUpdatePerm
                       ? null
                       : () => _pickTodoFile(index),
                   tooltip: 'Đính kèm tệp cho task',
                 ),
               ],
             ),
-            if (_todos[index].attachments.isNotEmpty) ...[
+            if (_todos[index].attachments.isNotEmpty || _uploadingAttachments.any((item) => item['todoIndex'] == index)) ...[
               const SizedBox(height: 8),
               _buildTodoAttachments(index),
             ],
@@ -2083,58 +2221,110 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
   Widget _buildTodoAttachments(int index) {
     final todo = _todos[index];
     final colorScheme = Theme.of(context).colorScheme;
+    final todoUploading = _uploadingAttachments.where((item) => item['todoIndex'] == index).toList();
 
     return Wrap(
       spacing: 6,
       runSpacing: 6,
-      children: todo.attachments.map((url) {
-        final fileName = url.split('%2F').last.split('?').first;
-        final isImage =
-            url.contains('.jpg') ||
-            url.contains('.png') ||
-            url.contains('.jpeg');
+      children: [
+        ...todo.attachments.map((url) {
+          final fileName = attachmentLabel(url, todo.attachments.indexOf(url));
+          final isImage = isImageValue(url);
 
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: colorScheme.surfaceContainerHigh,
+          return InkWell(
+            onTap: () {
+              if (isImage) {
+                _showImagePreview([url], 0);
+              } else {
+                _openAttachment(url, todo.attachments.indexOf(url));
+              }
+            },
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: colorScheme.outlineVariant),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isImage
-                    ? Icons.image_outlined
-                    : Icons.insert_drive_file_outlined,
-                size: 14,
-                color: colorScheme.primary,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: colorScheme.surfaceContainerHigh,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: colorScheme.outlineVariant),
               ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  fileName,
-                  style: const TextStyle(fontSize: 11),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isImage
+                        ? Icons.image_outlined
+                        : Icons.insert_drive_file_outlined,
+                    size: 14,
+                    color: colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      fileName,
+                      style: const TextStyle(fontSize: 11),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: !_canUpdateTodoStatusAndAttachments(index)
+                        ? null
+                        : () => setState(() => todo.attachments.remove(url)),
+                    child: Icon(
+                      Icons.close,
+                      size: 14,
+                      color: colorScheme.error.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+        ...todoUploading.map((item) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: colorScheme.outlineVariant),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(strokeWidth: 1.2),
                 ),
-              ),
-              const SizedBox(width: 4),
-              GestureDetector(
-                onTap: !_canModifyTodo(index)
-                    ? null
-                    : () => setState(() => todo.attachments.remove(url)),
-                child: Icon(
-                  Icons.close,
-                  size: 14,
-                  color: colorScheme.error.withValues(alpha: 0.7),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    item['name'] as String,
+                    style: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _uploadingAttachments.removeWhere((x) => x['id'] == item['id']);
+                    });
+                  },
+                  child: Icon(
+                    Icons.close,
+                    size: 14,
+                    color: colorScheme.error.withValues(alpha: 0.7),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -2178,7 +2368,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             (email) => DropdownMenuItem(value: email, child: Text(email)),
           ),
         ],
-        onChanged: !_canModifyTodo(index)
+        onChanged: !_canEditTodoDefinition(index)
             ? null
             : (value) {
                 setState(() {
@@ -2194,7 +2384,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
     return TextFormField(
       key: ValueKey('assignee_$index'),
       initialValue: todo.assigneeEmail,
-      enabled: !_isGroupTaskLocked,
+      enabled: _canEditTodoDefinition(index),
       onChanged: (value) {
         _todos[index].assigneeEmail = value.toLowerCase().trim();
         _todos[index].assigneeName = value.trim();
@@ -2225,7 +2415,7 @@ class _CreateEditNoteScreenState extends State<CreateEditNoteScreen> {
             ),
           )
           .toList(),
-      onChanged: !_canModifyTodo(index)
+      onChanged: !_canUpdateTodoStatusAndAttachments(index)
           ? null
           : (status) {
               if (status == null) return;

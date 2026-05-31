@@ -50,7 +50,6 @@ class ChatService extends BaseService {
     return BaseService.db
         .collection('chats')
         .where('participants', arrayContains: myEmail)
-        .orderBy('updatedAt', descending: true)
         .snapshots();
   }
 
@@ -92,7 +91,7 @@ class ChatService extends BaseService {
     });
 
     await BaseService.db.collection('chats').doc(chatId).update({
-      'unreadCount.$myEmail': 0,
+      FieldPath(['unreadCount', myEmail]): 0,
     });
   }
 
@@ -119,15 +118,16 @@ class ChatService extends BaseService {
     try {
       final chatId = chatIdForEmails(myEmail, targetEmail);
       final chatRef = BaseService.db.collection('chats').doc(chatId);
+      final sortedParticipants = [myEmail, targetEmail]..sort();
       await chatRef.set({
-        'participants': [myEmail, targetEmail],
+        'participants': sortedParticipants,
         'lastMessage': cleanText.isNotEmpty
             ? cleanText
             : _attachmentPreview(cleanAttachments),
         'lastSender': myEmail,
         'lastAttachmentCount': cleanAttachments.length,
         'updatedAt': FieldValue.serverTimestamp(),
-        'unreadCount.$targetEmail': FieldValue.increment(1),
+        'unreadCount': {targetEmail: FieldValue.increment(1)},
       }, SetOptions(merge: true));
 
       await chatRef.collection('messages').add({
@@ -323,7 +323,7 @@ class ChatService extends BaseService {
     final myEmail = AppState.currentUserEmail.toLowerCase().trim();
     final chatId = chatIdForEmails(myEmail, friendEmail);
     await BaseService.db.collection('chats').doc(chatId).set({
-      'unreadCount.$myEmail': 0,
+      'unreadCount': {myEmail: 0},
       'updatedAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
   }
